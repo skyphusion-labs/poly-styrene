@@ -121,11 +121,23 @@ public**: the deferral is a bare `type: 5` with no flags, so the reply lands in 
 
 ## Checks
 
-**`/ask` logs `ask_timing` with a split per await**, because the handler has a hard 3 second
+**`/ask` logs `ask_io_ms` with a split per await**, because the handler has a hard 3 second
 Discord deadline and **no test in this repo can fail a deadline**: every test drives `commandAsk`
-against in-memory fakes that answer instantly. Workers freezes the clock except across I/O, so a
-zero split means that step did none and the one non-zero split is where the budget went. Read that
-line before theorising about latency.
+against in-memory fakes that answer instantly. Read that line before theorising about latency.
+
+**Every split in it is I/O TIME, not wall-clock, and the names say so on purpose.** Workers freezes
+the clock except across an I/O boundary, so a zero split means that step did no I/O and compute is
+invisible to this instrument by construction. The sum is `io_total` rather than `total` because it
+will NOT match a `wrangler tail` `wallTime` and must not be compared to it. **Do not add a timer
+around local work expecting a number**: it will correctly read 0, and the next reader will file a
+bug against a correct result. If CPU time is ever the question, `wrangler tail` reports `cpuTime`
+and that is the right instrument.
+
+**The response path is held to two sequential round trips, and that is a budget, not an accident.**
+The catalog is read only when an override has to be resolved against it, the pin and the cooldown
+are read in one `Promise.all`, and the cooldown write goes to `ctx.waitUntil` because nobody reads
+its result before the deferral returns. `test/ask_io.test.ts` asserts those stay removed, since a
+removed round trip is invisible to any assertion about the response.
 
 `npm run typecheck` then `npm test`, both green, before a deploy. `tsc` is not part of the vitest
 run, so a type error passes the suite silently. `npm run coverage` for the v8 report. CI jobs are
