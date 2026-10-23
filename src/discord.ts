@@ -10,8 +10,10 @@ import {
   type ModelQuery,
 } from "./catalog";
 import { clearPin, getPin, setPin } from "./db";
-import type { AskParams, Env } from "./env";
+import type { AskParams, Env, LabParams } from "./env";
 import { preflight, taskKind } from "./infer";
+import { labGate, labQuota, parseLab, parseRoleIds, quotaWindowStart } from "./lab";
+import { countLabRuns } from "./lab_journal";
 import { refreshCatalog } from "./refresh";
 import { selectValue } from "./text";
 import { stopwatch } from "./timing";
@@ -93,6 +95,13 @@ function placeOf(interaction: Json): Place {
     guildId: typeof interaction.guild_id === "string" ? interaction.guild_id : "dm",
     channelId: typeof interaction.channel_id === "string" ? interaction.channel_id : "dm",
   };
+}
+
+/** The invoker's role ids, which is what gates /lab. Absent in a DM. */
+function rolesOf(interaction: Json): string[] {
+  const member = asRecord(interaction.member);
+  if (!member || !Array.isArray(member.roles)) return [];
+  return member.roles.filter((role): role is string => typeof role === "string");
 }
 
 function dataOf(interaction: Json): Json {
@@ -407,6 +416,60 @@ async function commandAsk(interaction: Json, env: Env, ctx: WaitCtx, place: Plac
   return { type: 5 };
 }
 
+async function commandLab(interaction: Json, env: Env, place: Place): Promise<Json> {
+  // Gate first, and refuse ephemerally, so a denial is not announced to the
+  // channel and nothing is started before the invoker is known to be allowed.
+  const gate = labGate({
+    inGuild: place.guildId !== "dm",
+    roles: rolesOf(interaction),
+    allowedRoleIds: parseRoleIds(env.LAB_ROLE_IDS),
+  });
+  if (!gate.ok) return ephemeral(gate.reason);
+
+  const options = optionsOf(dataOf(interaction));
+  const parsed = parseLab(stringOpt(options, "language"), stringOpt(options, "code"));
+  if (!parsed.ok) return ephemeral(parsed.error);
+
+  const interactionId = stringField(interaction, "id");
+  const applicationId = stringField(interaction, "application_id") || env.DISCORD_APPLICATION_ID || "";
+  const interactionToken = stringField(interaction, "token");
+  if (!interactionId || !applicationId || !interactionToken) {
+    return ephemeral("Discord did not send an application id and token.");
+  }
+
+  // The quota is read before anything is started. countLabRuns reports -1 when
+  // it cannot read, and labQuota refuses a negative, so a broken read denies
+  // rather than reading as an unused quota.
+  const used = await countLabRuns(env.DB, place.userId, quotaWindowStart(Date.now()));
+  const quota = labQuota(used);
+  if (!quota.ok) return ephemeral(quota.reason);
+
+  const params: LabParams = {
+    applicationId,
+    interactionToken,
+    sessionId: interactionId,
+    userId: place.userId,
+    guildId: place.guildId,
+    channelId: place.channelId,
+    lang: parsed.lang,
+    code: parsed.code,
+  };
+
+  try {
+    // Same idempotency as /ask: the interaction id IS the Workflow id, so a
+    // Discord retry re-acknowledges rather than running the code twice.
+    await env.LABRUN.create({ id: interactionId, params });
+  } catch (err) {
+    const message = err instanceof Error ? err.message : "";
+    if (message.toLowerCase().includes("already exists")) return { type: 5 };
+    console.log(JSON.stringify({ event: "lab_create_failed", lang: parsed.lang }));
+    return ephemeral("I could not start the lab. Try again.");
+  }
+
+  console.log(JSON.stringify({ event: "lab_started", lang: parsed.lang }));
+  return { type: 5 };
+}
+
 async function autocomplete(interaction: Json, env: Env, ctx: WaitCtx): Promise<Json> {
   const options = optionsOf(dataOf(interaction));
   const focused = options.find((opt) => opt.focused);
@@ -465,6 +528,7 @@ async function routeCommand(interaction: Json, env: Env, ctx: WaitCtx, place: Pl
   if (name === "models") return commandModels(interaction, env, ctx, place);
   if (name === "model") return commandModel(interaction, env, place);
   if (name === "ask") return commandAsk(interaction, env, ctx, place);
+  if (name === "lab") return commandLab(interaction, env, place);
   return ephemeral("I don't know that interaction.");
 }
 

@@ -119,6 +119,68 @@ public**: the deferral is a bare `type: 5` with no flags, so the reply lands in 
   new runtime dep needs a reason that the bindings cannot meet.
 - No em dashes or en dashes in source, docs, or commits.
 
+## The lab
+
+`/lab` runs `sh`, `python` or `node` in a Cloudflare Container and posts the output back. It is a
+second, separate backend from the two inference paths and shares nothing with them but the
+deferral pattern and the Discord REST client.
+
+**The irreversible decision is the scheduling policy, and it is `default`.** `scheduling_policy` is
+deliberately OMITTED from `wrangler.jsonc`, which selects it. `max_instances` is the only
+concurrency ceiling that survives our own code being wrong, Cloudflare has no spend cap, and
+`max_instances` is **not supported** under the `durable_object` policy. **The policy is immutable
+once the application exists**, so changing it means replacing every running instance. Both
+`@cloudflare/sandbox` and `@cloudflare/computer`'s container backend require `durable_object`, which
+is why neither is used for execution; see poly-styrene#6 and #21 for the reasoning and for what
+`computer` does and does not give us.
+
+**Containment is `enableInternet: false` and nothing else.** No outbound handler, deliberately: one
+runs in the Workers runtime with access to `env`, so a loose handler hands the sandbox our `DB`,
+`CATALOG` and `AI` bindings. The container holds no credential of ours and needs none.
+**Measured, not assumed:** poly-styrene#8 confirmed the flag is honoured on the `default` policy,
+with bracketing controls executing real code either side of four network probes that all failed.
+A contained container and one whose egress silently works look identical from the Worker side, so
+if that flag is ever changed, re-run that probe rather than reasoning about it.
+
+**Teardown is a platform property, not our diligence, and three things would defeat it.** Cloudflare
+stops the instance shortly after the Durable Object goes inactive, and **code running inside an
+instance does not count as activity**, so a runaway cannot keep itself alive and a dead Workflow
+leaks nothing. Do not add any of these: a Durable Object alarm that checks on the work, a long
+inactivity timeout, or a pending `monitor()` call, which under this compatibility date holds the
+object in memory for up to fifteen minutes. Each one converts a platform guarantee into our own
+correctness.
+
+**The run bound is destroying the container, never `kill()`.** `exec()` has no timeout, `kill()`
+does not reach the process's children, `output()` waits for those children, and calling `kill()` or
+aborting after a process has exited **raises an uncaught internal error in the Durable Object**. So
+this code never calls it. A runaway is stopped by taking the instance away.
+
+**Gating is in code here, unlike `/ask`.** `LAB_ROLE_IDS` is a comma separated list of Discord role
+ids and **an empty value denies everyone**, which is how it ships. That is not caution about
+containment, which is measured; it is that who may spend money on a billed microVM is Conrad's
+decision. `labGate` is closed by default in every direction: no configured roles, no guild, or no
+matching role all refuse.
+
+**Everything decidable lives in `src/lab.ts` and `src/lab_journal.ts`**, including both ends of the
+Worker-to-sandbox wire format, because `src/lab_container.ts` and `src/lab_workflow.ts` import
+`cloudflare:workers` and no vitest file can import them. Keep those two thin. `test/lab.test.ts`
+also reads `wrangler.jsonc` and fails if the instance class or the instance cap drifts from the
+constants, since those constants only MIRROR config under this policy.
+
+**The journal is metadata only**: `lab_sessions` records who ran a sandbox, where, which instance,
+when it started and stopped, and how it ended. **Not the code and not the output.**
+`test/lab_journal.test.ts` reads the migration and fails on any column that could hold either. The
+quota counts an abandoned open session, so walking away buys no free slot, and `countLabRuns`
+reports `-1` rather than `0` on an unreadable count because `labQuota` refuses a negative and would
+have ALLOWED a zero.
+
+**Deploying the container needs the Docker daemon**, because the image is a Dockerfile path and
+Wrangler builds it. **And a deploy reports the WORKER in about a second while the container
+application is still `provisioning`**; curling immediately races it, which cost two probe attempts.
+Poll `wrangler containers list` until the state is no longer `provisioning`. Teardown is TWO
+deletes: `wrangler delete --name <worker>` leaves the container application behind while printing
+success, so delete the application by exact ID as well and then list again to confirm.
+
 ## Checks
 
 **`/ask` logs `ask_io_ms` with a split per await**, because the handler has a hard 3 second

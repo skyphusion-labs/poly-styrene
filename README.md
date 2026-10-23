@@ -18,10 +18,54 @@ The picker lists every Workers AI model the account search API returns (the live
 | `/models` | Filter and page the catalog. The menu pins a model for you in this channel. |
 | `/model` | Show your pin, pin a name, or `clear` back to the default. |
 | `/ask` | Ask your pinned model. `model` overrides it for this ask. `file` is for image and audio models. `source_lang` and `target_lang` are for translation. |
+| `/lab` | Run code in a disposable sandbox with no network. Role gated, and off by default. |
 
 Pins are per person, per channel. Answers are public. Lists and errors are only visible to you. There is a 3 second pause between asks.
 
 Workers AI and typed catalog models bill on Cloudflare. Ollama bills RunPod per GPU-second while the worker is up.
+
+## The lab
+
+`/lab` runs `sh`, `python` or `node` in a Cloudflare Container and posts the output back. It exists
+for the work the chat path cannot do: compiling something, reading a binary, checking what a script
+actually does.
+
+What bounds it:
+
+- **Role gated, and closed by default.** `LAB_ROLE_IDS` is a comma separated list of Discord role
+  ids. **An empty value denies everyone**, which is how it ships. The Ed25519 signature proves a
+  request came from Discord; the role is what says who may spend money.
+- **No network.** The container starts with `enableInternet: false`, so nothing resolves DNS and
+  nothing reaches a third party. Everything the sandbox has is baked into
+  `containers/lab/Dockerfile` at build time, and the base image is pinned by digest.
+- **No credential.** The container holds none of ours. There is deliberately no outbound handler,
+  because one would run in the Workers runtime with access to every binding this Worker has.
+- **One sandbox per person**, named from the authenticated invoker, on the `basic` instance class
+  (1/4 vCPU, 1 GiB, 4 GB disk), capped at `max_instances: 2` for the whole Worker.
+- **Two time bounds.** A run is killed at 2 minutes by destroying the container, because `exec()`
+  has no timeout and killing a process does not kill its children. Separately the container carries
+  a 5 minute inactivity timeout, which is the platform stopping it if this Worker or the Workflow
+  dies. Work inside a container does not count as activity, so a runaway cannot keep itself alive.
+- **20 runs per person per day**, counted from the journal. An abandoned open session still counts.
+
+What is recorded: one row per run in `lab_sessions` holding who ran it, where, which instance, when
+it started and stopped, and how it ended. **Not the code and not the output.** Rows are pruned after
+30 days on the existing cron. Note that the submitted code does transit the Workflow payload, which
+the Workflow engine retains for the instance, exactly as an `/ask` prompt already does.
+
+### Before opening the lab to anyone
+
+Two steps, in this order, and the second is not optional:
+
+1. `npx wrangler d1 migrations apply poly-styrene` for `0002_lab_sessions.sql`.
+2. **Confirm egress is actually dead from inside a deployed container**, by running something that
+   tries to resolve a name and reach a host and watching it fail. `enableInternet: false` is passed
+   on the `default` scheduling policy, where the Cloudflare docs make start options optional, and
+   every rendered example of that flag uses the other policy. The flag is not verified on this path.
+   Until it is, leave `LAB_ROLE_IDS` empty.
+
+Deploying the container needs the Docker daemon running, because Wrangler builds and pushes the
+image. `--containers-rollout=none` deploys the Worker without touching the container.
 
 ## Connect Discord
 

@@ -21,7 +21,16 @@
     // RunPod; recorded here so the poll budget can be derived from it instead
     // of restated beside it. CONFIRM IT AGAINST THE ENDPOINT and correct this
     // if it differs; the code falls back to 900 when unset or unparseable.
-    "RUNPOD_EXEC_TIMEOUT_SEC": "900"
+    "RUNPOD_EXEC_TIMEOUT_SEC": "900",
+    // Comma separated Discord role ids allowed to run /lab. EMPTY DENIES
+    // EVERYONE.
+    //
+    // Containment IS confirmed: poly-styrene#8 measured enableInternet:false
+    // honoured on the default scheduling policy, with both bracketing controls
+    // executing real code. So this is no longer empty because the sandbox is
+    // unverified. It is empty because WHO may spend money on a billed microVM
+    // is Conrad's decision, and a merge should not settle it by default.
+    "LAB_ROLE_IDS": ""
   },
   "ai": {
     "binding": "AI"
@@ -45,8 +54,46 @@
       "name": "poly-styrene-ask",
       "binding": "ASK",
       "class_name": "AskWorkflow"
+    },
+    {
+      "name": "poly-styrene-lab",
+      "binding": "LABRUN",
+      "class_name": "LabWorkflow"
     }
   ],
+  // The /lab sandbox.
+  //
+  // scheduling_policy is deliberately OMITTED, which selects `default`.
+  // max_instances is the only concurrency ceiling that survives our own code
+  // being wrong, and it is NOT supported under the `durable_object` policy.
+  // The policy is immutable once the application is created, so changing this
+  // later means replacing every running instance.
+  "containers": [
+    {
+      "class_name": "LabContainer",
+      "image": "./containers/lab/Dockerfile",
+      "instance_type": "basic",
+      "max_instances": 2
+    }
+  ],
+  // A container application needs all three of these: the container, the
+  // Durable Object binding, and the class export with SQLite storage.
+  // `exports` is mutually exclusive with `migrations`, and this Worker has no
+  // `migrations` array.
+  "durable_objects": {
+    "bindings": [
+      {
+        "name": "LAB",
+        "class_name": "LabContainer"
+      }
+    ]
+  },
+  "exports": {
+    "LabContainer": {
+      "type": "durable-object",
+      "storage": "sqlite"
+    }
+  },
   "triggers": {
     "crons": ["17 */6 * * *"]
   }
