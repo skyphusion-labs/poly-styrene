@@ -141,6 +141,21 @@ export function memoryLabDb() {
   return { db: db as unknown as D1Database, rows };
 }
 
+/**
+ * SYNCHRONOUS ON PURPOSE, and that has a consequence worth knowing.
+ *
+ * `create` is declared `async` and has NO `await` in its body, so it runs to
+ * completion synchronously. That makes it simple for the many tests that only
+ * care WHETHER an instance was created, and it means those tests **cannot see
+ * an await being removed**: moving the Workflow create from the response path
+ * into `ctx.waitUntil` left all 150 tests green.
+ *
+ * So if you are asserting about ORDERING or TIMING rather than about the fact
+ * of creation, do not use this. Build a fake that actually defers, locally in
+ * the file that needs it, and see `test/ask_io.test.ts` for the working shape:
+ * an explicitly released gate with a timeout backstop. `CLAUDE.md` has the
+ * general rule under "What a fake has to be able to do".
+ */
 export function memoryAsk() {
   const created: { id: string; params: AskParams }[] = [];
   const binding = {
@@ -154,6 +169,21 @@ export function memoryAsk() {
   return { binding: binding as unknown as Workflow<AskParams>, created };
 }
 
+/**
+ * SYNCHRONOUS ON PURPOSE, and that has a consequence worth knowing.
+ *
+ * `create` is declared `async` and has NO `await` in its body, so it runs to
+ * completion synchronously. That makes it simple for the many tests that only
+ * care WHETHER an instance was created, and it means those tests **cannot see
+ * an await being removed**: moving the Workflow create from the response path
+ * into `ctx.waitUntil` left all 150 tests green.
+ *
+ * So if you are asserting about ORDERING or TIMING rather than about the fact
+ * of creation, do not use this. Build a fake that actually defers, locally in
+ * the file that needs it, and see `test/ask_io.test.ts` for the working shape:
+ * an explicitly released gate with a timeout backstop. `CLAUDE.md` has the
+ * general rule under "What a fake has to be able to do".
+ */
 export function memoryLabRun() {
   const created: { id: string; params: LabParams }[] = [];
   const binding = {
