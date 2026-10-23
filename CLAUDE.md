@@ -87,6 +87,14 @@ public**: the deferral is a bare `type: 5` with no flags, so the reply lands in 
 
 - `src/env.ts` is the hand-authored `Env`. Do not commit `worker-configuration.d.ts`. Do not run
   `wrangler types` into the tree.
+- **Call a binding method ON its binding. Never hoist it into a local first.** A binding is a host
+  object with internal state on `this`, so `const run = env.AI.run; run(...)` detaches the receiver
+  and the binding assigns to a private field on `undefined`. That shipped, and every `/ask` on the
+  Workers AI path threw `Cannot set properties of undefined (setting '#options')` from
+  `cloudflare-internal:ai-api` until poly-styrene#9. If a cast is needed to type an option, **put it
+  on the object, not on the method**: `(ai as unknown as { run: GatewayRun }).run(...)`. A stub whose
+  method is an arrow function cannot catch this, because a detached arrow behaves exactly like a
+  bound one, so any test for it needs a stub that touches `this`.
 - Secrets stay out of `wrangler.jsonc`: `DISCORD_PUBLIC_KEY`, `DISCORD_APPLICATION_ID`,
   `RUNPOD_API_KEY`, `CATALOG_TOKEN`. Presence-check with `${var:+SET}` only, never `${var:-...}`.
 - `CATALOG_TOKEN` is a **Workers AI Read** token. **It is not the account token.** The catalog
@@ -112,6 +120,12 @@ public**: the deferral is a bare `type: 5` with no flags, so the reply lands in 
 - No em dashes or en dashes in source, docs, or commits.
 
 ## Checks
+
+**`/ask` logs `ask_timing` with a split per await**, because the handler has a hard 3 second
+Discord deadline and **no test in this repo can fail a deadline**: every test drives `commandAsk`
+against in-memory fakes that answer instantly. Workers freezes the clock except across I/O, so a
+zero split means that step did none and the one non-zero split is where the budget went. Read that
+line before theorising about latency.
 
 `npm run typecheck` then `npm test`, both green, before a deploy. `tsc` is not part of the vitest
 run, so a type error passes the suite silently. `npm run coverage` for the v8 report. CI jobs are
@@ -149,6 +163,17 @@ configured on the RunPod side, not in `wrangler.jsonc` or anywhere else here, so
 the endpoint timeout live in two places with only one of them in version control and nothing that
 compares them. Whoever changes `POLLS` cannot see the other number, and whoever changes the endpoint
 cannot see this one. Record the endpoint timeout here and derive the poll budget from it.
+
+**A deploy is only reproducible if what you deploy is a committed ref, and this repo has been
+bitten.** Behaviour that exists only in an uncommitted working tree is invisible to every normal
+check: `git status` on the deploy tree is clean, the diff against `main` is clean, the suite is
+green, and the deploy prints nothing unusual, because there is nothing for any of them to compare
+against. On 2026-10-23 deploying `main` removed `allowed_mentions` from the live Worker for about
+twenty minutes for exactly that reason. **Before deploying, diff what `main` LACKS against whatever
+tree the current deployment came from, not the other way round**, and prefer committing to carrying
+behaviour in an editor. Tracked as poly-styrene#15. The durable half of the fix is a test that fails
+when the behaviour is absent, since vigilance is not a control; poly-styrene#14 adds one for the
+protection that was lost.
 
 **The Ollama image is unpinned.** The RunPod endpoint runs `svenbrnn/runpod-ollama:latest`, a
 third-party tag, so what executes on the GPU can change without a commit here. Pin a digest to make
