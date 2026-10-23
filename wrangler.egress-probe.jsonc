@@ -1,0 +1,45 @@
+{
+  // Egress probe for poly-styrene#8. Its own worker name and its own container
+  // application, so it cannot touch the live poly-styrene worker or its
+  // bindings. NEVER MERGE THIS BRANCH; delete the worker when #8 is answered.
+  //
+  // scheduling_policy is OMITTED, which selects `default`. That is the whole
+  // point: the open question is whether enableInternet:false is honoured on
+  // THIS policy, so the probe has to run on it.
+  "$schema": "./node_modules/wrangler/config-schema.json",
+  "name": "poly-egress-probe",
+  "main": "probe-egress/worker.ts",
+  "compatibility_date": "2026-10-23",
+  "compatibility_flags": ["nodejs_compat"],
+  "account_id": "fabcb25d9c7eb087110ec474a03e50d2",
+  "workers_dev": true,
+  "observability": {
+    "enabled": true,
+    "head_sampling_rate": 1
+  },
+  // The SAME class, the SAME image and the SAME instance class as /lab, so the
+  // result transfers to /lab rather than being a fact about some other
+  // container.
+  "containers": [
+    {
+      "class_name": "LabContainer",
+      "image": "./containers/lab/Dockerfile",
+      "instance_type": "basic",
+      "max_instances": 1
+    }
+  ],
+  "durable_objects": {
+    "bindings": [
+      {
+        "name": "LAB",
+        "class_name": "LabContainer"
+      }
+    ]
+  },
+  "exports": {
+    "LabContainer": {
+      "type": "durable-object",
+      "storage": "sqlite"
+    }
+  }
+}
