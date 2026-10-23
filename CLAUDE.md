@@ -332,5 +332,47 @@ set and the signature simply did not verify.
 `GET /health` reports `{ ok, name, gateway, ollama }`, where `ollama` is only
 `Boolean(env.RUNPOD_ENDPOINT_ID)`. It proves the binding is configured, not that the GPU works.
 
+### Before a deploy: compare against what is RUNNING, not against another local tree
+
+**Run `npm run predeploy <deployed-bundle> <candidate-bundle>` and do not deploy if it refuses.**
+
+**Why this and not a status check.** On 2026-10-23 deploying `main` removed `allowed_mentions:
+{ parse: [] }` from the live Worker for about twenty minutes. Every local instrument said fine:
+`git status` clean, the diff against `main` clean, the suite green, the deploy quiet. **They all
+agreed because the content being lost had never been committed, so there was nothing for any of them
+to compare against.** Another status check or another local diff inherits that blindness exactly.
+The only thing that differed was **the artifact already running**, because it had been built from
+the uncommitted tree.
+
+**So it has to run BEFORE the deploy.** Afterwards the deployed bundle and the ref match by
+construction and nothing can fire.
+
+The sequence:
+
+1. Build the candidate: `npx wrangler deploy --dry-run --outdir /tmp/candidate`
+2. Fetch what is live, which is the one step the tool deliberately does not do:
+   `curl -s -H "authorization: Bearer $CLOUDFLARE_API_TOKEN"
+   "https://api.cloudflare.com/client/v4/accounts/$ACCOUNT_ID/workers/scripts/poly-styrene/content"
+   -o /tmp/deployed.js`
+3. `npm run predeploy /tmp/deployed.js /tmp/candidate/index.js`
+
+**Caveat on step 2, stated because it is the only unverified part:** a module-format Worker may
+return `multipart/form-data` rather than a bare module, in which case the main module has to be
+extracted from the response before comparing. Check the response's content type the first time.
+Everything in the tool itself is covered by `test/predeploy.test.ts`; the download is left outside
+so it is an operator step whose output can be eyeballed rather than magic inside a gate.
+
+**It compares TOKENS, and that was measured rather than chosen.** Against the real historical pair,
+`ac5320a` which carries the fix against its parent `d20f2ee` which does not: a quoted-string
+comparison found **zero** deployed-only entries and would not have fired, because `allowed_mentions`
+is an object KEY and keys are unquoted. Word-like tokens found **exactly one**, `allowed_mentions`,
+with no noise. Tokens are the surface that carries the signal and survives minification, which
+mangles local identifiers but not property names. Do not "simplify" it to matching quoted strings;
+a test pins that measurement.
+
+**A loss refuses; an addition does not.** Adding behaviour is the normal case and is reported for
+information. Only the deployed bundle holding something the candidate lacks is an error, and an
+addition in the same deploy does not excuse a loss.
+
 `npm run register` registers slash commands with the bot token, which is not a Worker secret. Global
 commands can take about an hour; set `DISCORD_GUILD_ID` to register to one server immediately.
