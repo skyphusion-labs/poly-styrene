@@ -16,7 +16,12 @@
     "DEFAULT_MODEL": "@cf/zai-org/glm-4.7-flash",
     "DEFAULT_TASK": "Text Generation",
     "OLLAMA_MODEL": "huihui_ai/foundation-sec-abliterated",
-    "RUNPOD_ENDPOINT_ID": "5onx7evgqlku3u"
+    "RUNPOD_ENDPOINT_ID": "5onx7evgqlku3u",
+    // The RunPod endpoint EXECUTION TIMEOUT in seconds. This number lives on
+    // RunPod; recorded here so the poll budget can be derived from it instead
+    // of restated beside it. CONFIRM IT AGAINST THE ENDPOINT and correct this
+    // if it differs; the code falls back to 900 when unset or unparseable.
+    "RUNPOD_EXEC_TIMEOUT_SEC": "900"
   },
   "ai": {
     "binding": "AI"

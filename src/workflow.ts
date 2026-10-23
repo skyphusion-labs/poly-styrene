@@ -2,10 +2,18 @@ import { WorkflowEntrypoint, type WorkflowEvent, type WorkflowStep } from "cloud
 import type { AskParams, Env } from "./env";
 import { buildWorkersInput, extractAnswer, runCloudflare } from "./infer";
 import { publishAnswer, postDiscordMessage } from "./discord_rest";
-import { interpretRunpod, ollamaChatBody } from "./runpod";
+import {
+  cancelRunpodJob,
+  execTimeoutSec,
+  giveUpMessage,
+  interpretRunpod,
+  ollamaChatBody,
+  pollPlan,
+  runpodUrl,
+  type CancelOutcome,
+} from "./runpod";
 import { base64ToBytes, chunkDiscord, formatReply } from "./text";
 
-const POLLS = 72;
 const STEP_RETRY = {
   retries: { limit: 3, delay: "2 seconds" as const, backoff: "constant" as const },
   timeout: "1 minute" as const,
@@ -120,7 +128,7 @@ export class AskWorkflow extends WorkflowEntrypoint<Env, AskParams> {
       { retries: { limit: 0, delay: "1 second" as const }, timeout: "30 seconds" as const },
       async () => {
       console.log(JSON.stringify({ event: "ask_infer", provider: "ollama", model: params.modelId, task: params.task }));
-      const response = await fetch(`https://api.runpod.ai/v2/${endpoint}/run`, {
+      const response = await fetch(runpodUrl(endpoint, "run"), {
         method: "POST",
         headers: { authorization: `Bearer ${key}`, "content-type": "application/json" },
         body: JSON.stringify(ollamaChatBody(params.modelId, params.prompt)),
@@ -142,33 +150,75 @@ export class AskWorkflow extends WorkflowEntrypoint<Env, AskParams> {
       console.log(JSON.stringify({ event: "ask_notice_failed", provider: "ollama", model: params.modelId, task: params.task }));
     }
 
-    for (let i = 0; i < POLLS; i++) {
-      const view = await step.do(
-        `poll ${i}`,
-        { retries: { limit: 3, delay: "2 seconds" as const }, timeout: "30 seconds" as const },
-        async () => {
-        const response = await fetch(`https://api.runpod.ai/v2/${endpoint}/status/${job.id}`, {
-          headers: { authorization: `Bearer ${key}` },
+    // The budget is DERIVED from the endpoint timeout rather than restated
+    // beside it, and it deliberately outlasts it, so a job the endpoint itself
+    // kills is observed as failed instead of abandoned as pending.
+    const plan = pollPlan(execTimeoutSec(this.env.RUNPOD_EXEC_TIMEOUT_SEC));
+
+    try {
+      for (let i = 0; i < plan.polls; i++) {
+        const view = await step.do(
+          `poll ${i}`,
+          { retries: { limit: 3, delay: "2 seconds" as const }, timeout: "30 seconds" as const },
+          async () => {
+          const response = await fetch(runpodUrl(endpoint, `status/${job.id}`), {
+            headers: { authorization: `Bearer ${key}` },
+          });
+          if (!response.ok) throw new Error(`GPU status failed: ${response.status}`);
+          return interpretRunpod(await response.json());
         });
-        if (!response.ok) throw new Error(`GPU status failed: ${response.status}`);
-        return interpretRunpod(await response.json());
-      });
-      if (view.state === "done") {
-        const text = view.answer.kind === "error" ? view.answer.text : view.answer.kind === "text" ? view.answer.text : "Done.";
-        await this.publishText(step, `done ${i}`, params, formatReply(params.modelId, text));
-        return;
+        // Reaching a terminal state means the job stopped on its own. There is
+        // nothing to cancel and nothing still billing.
+        if (view.state === "done") {
+          const text = view.answer.kind === "error" ? view.answer.text : view.answer.kind === "text" ? view.answer.text : "Done.";
+          await this.publishText(step, `done ${i}`, params, formatReply(params.modelId, text));
+          return;
+        }
+        if (view.state === "failed") {
+          await this.publishText(step, `gpu fail ${i}`, params, `Poly Styrene, \`${params.modelId}\`\nGPU failed. ${safe(view.error)}`);
+          return;
+        }
+        await step.sleep(`wait ${i}`, plan.intervalMs);
       }
-      if (view.state === "failed") {
-        await this.publishText(step, `gpu fail ${i}`, params, `Poly Styrene, \`${params.modelId}\`\nGPU failed. ${safe(view.error)}`);
-        return;
-      }
-      await step.sleep(`wait ${i}`, "10 seconds");
+
+      // Budget exhausted while the job is still live. Cancel BEFORE telling the
+      // user, so what we tell them about the cost is true.
+      const outcome = await this.cancelJob(step, endpoint, key, job.id, "budget");
+      await this.publishText(step, "gpu timeout", params, giveUpMessage(plan.budgetSec, outcome));
+    } catch (err) {
+      // Any other abandonment: a status step that exhausted its retries, a
+      // publish that failed, the Workflow being torn down. The job is still
+      // running and nobody is going to read it.
+      await this.cancelJob(step, endpoint, key, job.id, "error");
+      throw err;
     }
-    await this.publishText(
-      step,
-      "gpu timeout",
-      params,
-      "GPU did not finish in about 12 minutes. The job may still be queued. Try again later.",
-    );
+  }
+
+  /**
+   * Stop paying for a job nobody will read. Best effort in both directions: it
+   * never throws, because it runs on paths that are already failing and must
+   * not replace the original error with its own.
+   */
+  private async cancelJob(
+    step: WorkflowStep,
+    endpoint: string,
+    key: string,
+    jobId: string,
+    why: "budget" | "error",
+  ): Promise<CancelOutcome> {
+    try {
+      return await step.do(
+        `cancel ${why}`,
+        { retries: { limit: 2, delay: "2 seconds" as const }, timeout: "30 seconds" as const },
+        async () => {
+          const outcome = await cancelRunpodJob(endpoint, key, jobId);
+          console.log(JSON.stringify({ event: "gpu_cancel", why, outcome }));
+          return outcome;
+        },
+      );
+    } catch {
+      console.log(JSON.stringify({ event: "gpu_cancel_failed", why }));
+      return "failed";
+    }
   }
 }
