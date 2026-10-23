@@ -122,13 +122,18 @@ or `discord_rest.ts`, which are pure and well covered; `workflow.ts` should stay
 so that the untestable surface stays small. Treat any change to it as unverified until exercised
 against a real Discord interaction.
 
-**The GPU poll loop gives up before the RunPod job does, and nothing cancels the job.** `POLLS` is
-72 with a 10 second `step.sleep`, so the Workflow stops caring at about **12 minutes**, while the
-RunPod endpoint timeout is **15**. `grep -rn cancel src` returns nothing: the RunPod
-`/cancel` endpoint is never called, on timeout or on any other exit. A job that outlives the loop
-keeps running and keeps billing with nobody reading the result. Any change to `POLLS` or to the
-endpoint timeout has to consider both numbers together, and a cancel on give-up is the missing
-piece.
+**The GPU poll loop can give up while the job is still running, and nothing cancels it.** `POLLS`
+is 72 with a 10 second `step.sleep`, so the Workflow stops caring after about **12 minutes** and
+posts a give-up message. `grep -rn cancel src test scripts` returns nothing: the RunPod `/cancel`
+endpoint is never called, not on give-up, not in `reportFailure`, and not when the Workflow throws.
+A job that outlives the loop keeps running and keeps billing with nobody reading the result, and the
+give-up text invites the user to try again, so the cost is additive rather than transient.
+
+**The number it has to agree with is not in this repo.** The RunPod endpoint execution timeout is
+configured on the RunPod side, not in `wrangler.jsonc` or anywhere else here, so the poll budget and
+the endpoint timeout live in two places with only one of them in version control and nothing that
+compares them. Whoever changes `POLLS` cannot see the other number, and whoever changes the endpoint
+cannot see this one. Record the endpoint timeout here and derive the poll budget from it.
 
 **The Ollama image is unpinned.** The RunPod endpoint runs `svenbrnn/runpod-ollama:latest`, a
 third-party tag, so what executes on the GPU can change without a commit here. Pin a digest to make
