@@ -31,7 +31,11 @@ export function stopwatch(now: () => number = Date.now): Stopwatch {
       last = at;
     },
     splits(): Splits {
-      return { ...splits, total: last - started };
+      // io_total, not total: this is the SUM OF MEASURED I/O and it will not
+      // match a wall-clock figure from a tail, because compute between the
+      // marks is invisible to a frozen clock. Naming it total invites exactly
+      // that comparison.
+      return { ...splits, io_total: last - started };
     },
   };
 }
