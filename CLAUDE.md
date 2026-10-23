@@ -232,6 +232,45 @@ removed round trip is invisible to any assertion about the response.
 run, so a type error passes the suite silently. `npm run coverage` for the v8 report. CI jobs are
 named `ci` and `coverage` and run on `ubuntu-latest`.
 
+## What a fake has to be able to do
+
+**A fake must exhibit the property your assertion depends on. If it cannot behave wrongly, your test
+cannot see the rule being broken.** This repo produced two defects from that one root in a single
+afternoon, both passing a suite that looked thorough, so it is written here rather than left to be
+found a third time.
+
+**Ask what property the defect would violate, then check the fake has it.** Not whether the fake
+returns the right shape. Whether it is capable of being wrong.
+
+**Instance one, a receiver.** `test/infer.test.ts` called `runCloudflare` with a stub whose `run` was
+an **arrow function that never touched `this`**. `infer.ts` reported 100% function coverage and the
+assertions were the ones you would want. But a detached arrow behaves identically to a bound one, so
+the stub could not tell a call on the binding from a call that had lost it, and every `/ask` on the
+Workers AI path threw `Cannot set properties of undefined (setting '#options')` in production. The
+guard now uses a class with a **private field**, the smallest thing that distinguishes them.
+
+**Instance two, an await.** `memoryAsk.create` in `test/fakes.ts` is declared `async` and has **no
+`await` in its body**, so it runs to completion **synchronously**. Moving the Workflow create off the
+response path into `ctx.waitUntil` therefore changed nothing any test could observe: **all 150 tests
+stayed green.** `async` in a signature does not make a fake deferred. If you are asserting about
+ordering or timing, the fake has to actually defer.
+
+**Three mechanics worth knowing before writing the deferred fake:**
+
+- **A zero-delay timer is not a reliable "later".** Gating a fake on `setTimeout(resolve, 0)` failed,
+  because `handleDiscord` awaits `crypto.subtle.verify` and that yields far enough for the timer to
+  fire first. The test then passes for no reason at all.
+- **Release the gate explicitly from the test, and give it a timeout backstop.** A gate that never
+  resolves turns a regression into a hang, and a timeout reports worse than a clean assertion.
+- **Keep a shared fake simple.** `memoryAsk` is synchronous on purpose; the deferred version is local
+  to the one file that asserts on deferral, rather than making every other test pay for asynchrony
+  it does not care about.
+
+**And the only reliable way to find this class of problem is to run the spec rather than read it.**
+Both instances above, plus a third where a log line nothing asserted could be deleted without the
+suite noticing, were found by breaking the thing on purpose and watching for red. **A guard that has
+never been seen to fail is a guess about the future.**
+
 ## Traps
 
 **`src/workflow.ts` has no automated test, and the harness structurally cannot give it one.** It
