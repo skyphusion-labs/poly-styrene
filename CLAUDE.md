@@ -57,7 +57,14 @@ gives on either path.
 `(guild_id, channel_id, user_id)` and holding the pinned provider, model id, task and an
 `updated_at`. That is the whole schema.
 
-**No prompt and no answer is ever persisted.** Not to D1, not to KV, not to a log line.
+**No prompt and no answer is persisted by this Worker.** Not to D1, not to KV, not to a log line.
+
+**One caveat, because the sentence above is easy to over-read.** `AskParams.prompt` is a Workflow
+event payload, and a Workflow engine retains its payload so the instance can resume, so the prompt
+does transit and is held by Workflows for the life of the instance. What is absent is any table, key
+or log line of ours that holds it. Note also what is NOT in that payload: `AskParams` carries no
+user id, so even the retained payload does not say who asked. Keep it that way; adding an invoker to
+it would quietly create the attribution the posture section below says does not exist.
 
 KV `CATALOG` holds two ephemeral things and no history: the refreshed model catalog, and a
 per-user ask cooldown at `cool:<userId>` with a 60 second TTL enforcing a 3 second gap between asks.
