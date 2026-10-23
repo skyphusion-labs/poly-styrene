@@ -1,0 +1,87 @@
+[
+  {
+    "name": "models",
+    "description": "List models and pin one for yourself in this channel",
+    "dm_permission": false,
+    "options": [
+      {
+        "name": "search",
+        "description": "Filter by name or id",
+        "type": 3
+      },
+      {
+        "name": "provider",
+        "description": "cloudflare or ollama",
+        "type": 3,
+        "choices": [
+          { "name": "cloudflare", "value": "cloudflare" },
+          { "name": "ollama", "value": "ollama" }
+        ]
+      },
+      {
+        "name": "task",
+        "description": "Task, for example Text Generation",
+        "type": 3,
+        "autocomplete": true
+      },
+      {
+        "name": "page",
+        "description": "Page, starting at 1",
+        "type": 4,
+        "min_value": 1
+      }
+    ]
+  },
+  {
+    "name": "model",
+    "description": "Show or pin your model in this channel",
+    "dm_permission": false,
+    "options": [
+      {
+        "name": "name",
+        "description": "Model to pin. Leave empty to show the current pin.",
+        "type": 3,
+        "autocomplete": true
+      },
+      {
+        "name": "clear",
+        "description": "Clear your pin and use the default",
+        "type": 5
+      }
+    ]
+  },
+  {
+    "name": "ask",
+    "description": "Ask the model you pinned",
+    "dm_permission": false,
+    "options": [
+      {
+        "name": "prompt",
+        "description": "What you want",
+        "type": 3,
+        "required": true
+      },
+      {
+        "name": "model",
+        "description": "Use this model for this ask only",
+        "type": 3,
+        "autocomplete": true
+      },
+      {
+        "name": "source_lang",
+        "description": "Translation source language, for example en",
+        "type": 3
+      },
+      {
+        "name": "target_lang",
+        "description": "Translation target language, for example es",
+        "type": 3
+      },
+      {
+        "name": "file",
+        "description": "Image or audio, when the model needs it",
+        "type": 11
+      }
+    ]
+  }
+]

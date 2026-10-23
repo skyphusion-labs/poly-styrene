@@ -1,0 +1,48 @@
+{
+  "$schema": "./node_modules/wrangler/config-schema.json",
+  "name": "poly-styrene",
+  "main": "src/index.ts",
+  "compatibility_date": "2026-10-23",
+  "compatibility_flags": ["nodejs_compat"],
+  "account_id": "fabcb25d9c7eb087110ec474a03e50d2",
+  "workers_dev": true,
+  "observability": {
+    "enabled": true,
+    "head_sampling_rate": 1
+  },
+  "vars": {
+    "GATEWAY_ID": "poly-styrene",
+    "ACCOUNT_ID": "fabcb25d9c7eb087110ec474a03e50d2",
+    "DEFAULT_MODEL": "@cf/zai-org/glm-4.7-flash",
+    "DEFAULT_TASK": "Text Generation",
+    "OLLAMA_MODEL": "huihui_ai/foundation-sec-abliterated",
+    "RUNPOD_ENDPOINT_ID": "5onx7evgqlku3u"
+  },
+  "ai": {
+    "binding": "AI"
+  },
+  "kv_namespaces": [
+    {
+      "binding": "CATALOG",
+      "id": "16ca78545cad45949f2e3d9f19828640"
+    }
+  ],
+  "d1_databases": [
+    {
+      "binding": "DB",
+      "database_name": "poly-styrene",
+      "database_id": "67ce6c1b-81f6-4018-8462-d2245d15e612",
+      "migrations_dir": "migrations"
+    }
+  ],
+  "workflows": [
+    {
+      "name": "poly-styrene-ask",
+      "binding": "ASK",
+      "class_name": "AskWorkflow"
+    }
+  ],
+  "triggers": {
+    "crons": ["17 */6 * * *"]
+  }
+}
