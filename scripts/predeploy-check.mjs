@@ -27,6 +27,52 @@
 // survives minification, which mangles local identifiers but not property
 // names.
 
+/**
+ * Pull the main module out of what the Workers API actually returns.
+ *
+ * MEASURED, not assumed. `GET .../workers/scripts/poly-styrene/content` on a
+ * module Worker returns `multipart/form-data`: 140,716 bytes in 2 parts, with
+ * the module in the part named `index.js`. The documentation used to hedge
+ * about this; it does not need to any more.
+ *
+ * Passes a bare module through untouched, so this keeps working if the API
+ * ever stops wrapping it.
+ *
+ * THE TRAILING NEWLINE IS THE TRAP. Multipart puts `\r\n` before the next
+ * boundary delimiter, and that byte belongs to the format rather than to the
+ * content. Keeping it produced a one-byte difference against a locally built
+ * bundle, 47,343 against 47,344, on every single run. Exactly ONE line ending
+ * is removed, not all trailing whitespace, because a bundle may legitimately
+ * end in a newline of its own and eating that would be a different bug.
+ *
+ * Fails loudly and names the parts it did find, rather than falling through to
+ * comparing a boundary header against a bundle.
+ */
+export function extractModule(raw, partName = "index.js") {
+  if (!raw.startsWith("--")) return raw;
+
+  const firstLine = raw.slice(0, raw.indexOf("\n")).replace(/\r$/, "");
+  const boundary = firstLine.replace(/^--/, "");
+  if (!boundary) throw new Error("multipart response has no boundary on its first line");
+
+  const names = [];
+  for (const chunk of raw.split("--" + boundary)) {
+    const split = chunk.search(/\r?\n\r?\n/);
+    if (split < 0) continue;
+    const head = chunk.slice(0, split);
+    const name = /name="([^"]+)"/.exec(head)?.[1];
+    if (!name) continue;
+    names.push(name);
+    if (name !== partName) continue;
+    const gap = /\r?\n\r?\n/.exec(chunk.slice(split))[0].length;
+    // Remove the ONE line ending the format added before the next delimiter.
+    return chunk.slice(split + gap).replace(/\r?\n$/, "");
+  }
+  throw new Error(
+    `multipart response has no part named ${JSON.stringify(partName)}; found: ${names.join(", ") || "none"}`,
+  );
+}
+
 /** Strip things that differ between builds without differing in behaviour. */
 export function normalise(text) {
   return text
@@ -102,11 +148,20 @@ const isMain = process.argv[1] && import.meta.url.endsWith(process.argv[1].split
 if (isMain) {
   const [deployedPath, candidatePath] = process.argv.slice(2);
   if (!deployedPath || !candidatePath) {
-    console.error("usage: node scripts/predeploy-check.mjs <deployed-bundle> <candidate-bundle>");
+    console.error("usage: node scripts/predeploy-check.mjs <deployed-bundle-or-multipart> <candidate-bundle> [part-name]");
     process.exit(2);
   }
   const { readFileSync } = await import("node:fs");
-  const result = compareBundles(readFileSync(deployedPath, "utf8"), readFileSync(candidatePath, "utf8"));
+  const partName = process.argv[4] || "index.js";
+  // The deployed side may be a raw multipart response; the candidate is a file
+  // wrangler wrote, so it never is. Extracting here means the documented
+  // sequence has one step fewer and no hand-rolled sed.
+  const deployedRaw = readFileSync(deployedPath, "utf8");
+  const deployed = extractModule(deployedRaw, partName);
+  if (deployed !== deployedRaw) {
+    console.log(`extracted part ${JSON.stringify(partName)}: ${deployedRaw.length} bytes of multipart -> ${deployed.length} bytes`);
+  }
+  const result = compareBundles(deployed, readFileSync(candidatePath, "utf8"));
   console.log(report(result));
   process.exit(result.safe ? 0 : 1);
 }

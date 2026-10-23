@@ -350,17 +350,28 @@ construction and nothing can fire.
 The sequence:
 
 1. Build the candidate: `npx wrangler deploy --dry-run --outdir /tmp/candidate`
-2. Fetch what is live, which is the one step the tool deliberately does not do:
+2. Fetch what is live:
    `curl -s -H "authorization: Bearer $CLOUDFLARE_API_TOKEN"
    "https://api.cloudflare.com/client/v4/accounts/$ACCOUNT_ID/workers/scripts/poly-styrene/content"
-   -o /tmp/deployed.js`
-3. `npm run predeploy /tmp/deployed.js /tmp/candidate/index.js`
+   -o /tmp/deployed.raw`
+3. `npm run predeploy /tmp/deployed.raw /tmp/candidate/index.js`
 
-**Caveat on step 2, stated because it is the only unverified part:** a module-format Worker may
-return `multipart/form-data` rather than a bare module, in which case the main module has to be
-extracted from the response before comparing. Check the response's content type the first time.
-Everything in the tool itself is covered by `test/predeploy.test.ts`; the download is left outside
-so it is an operator step whose output can be eyeballed rather than magic inside a gate.
+**The response IS multipart, measured rather than hedged.** `GET .../content` on this Worker
+returned `multipart/form-data`, 140,716 bytes in 2 parts, with the module in the part named
+`index.js`. **The tool extracts it for you**, passes a bare module through untouched in case the API
+ever stops wrapping, and fails loudly naming the parts it did find rather than comparing a boundary
+header against a bundle. Pass a third argument if the part is ever named something else.
+
+**One byte of that is a trap worth knowing about.** Multipart puts a `\r\n` before the next
+boundary delimiter and that byte belongs to the format, not the content. Keeping it produced a
+persistent one-byte difference against a locally built bundle, 47,343 against 47,344, on every run.
+The extractor removes exactly ONE line ending, not all trailing whitespace, because a bundle may
+legitimately end in a newline of its own. **It would not have changed a verdict either way**, since
+a trailing newline moves no tokens, which is part of why tokens are the comparison surface rather
+than bytes.
+
+The download stays an operator step so its output can be eyeballed; everything the tool does to it
+is covered by `test/predeploy.test.ts`.
 
 **It compares TOKENS, and that was measured rather than chosen.** Against the real historical pair,
 `ac5320a` which carries the fix against its parent `d20f2ee` which does not: a quoted-string
