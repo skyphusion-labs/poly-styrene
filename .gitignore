@@ -1,8 +1,16 @@
-node_modules/
-.wrangler/
+# Patterns here deliberately carry NO trailing slash.
+#
+# `node_modules/` matches a DIRECTORY only, so a SYMLINK named node_modules is
+# not ignored by it. That is how `node_modules -> /Users/conrad/dev/poly-styrene/node_modules`
+# came to be committed and pushed to a public repo: an absolute path from one
+# machine, which every clone then resolves to something that does not exist, and
+# which on THAT machine points npm at another working tree's dependencies.
+# Without the slash the pattern matches a file, a directory and a symlink alike.
+node_modules
+.wrangler
 .dev.vars
 worker-configuration.d.ts
-coverage/
-dist/
+coverage
+dist
 *.local.json
 .DS_Store
