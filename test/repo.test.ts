@@ -63,3 +63,24 @@ describe("repository hygiene", () => {
     expect(slashed).toEqual([]);
   });
 });
+
+describe("the GPU image reference stays pinned", () => {
+  // The endpoint configuration lives on RunPod, so this repo cannot enforce
+  // what actually runs. What it CAN enforce is that its own record does not
+  // drift back to a mutable tag, which is the thing that made poly-styrene#4
+  // invisible: nothing anywhere said which image had run.
+  const readme = () => readFileSync(new URL("../README.md", import.meta.url), "utf8");
+
+  it("records a digest, not a tag", () => {
+    const text = readme();
+    expect(text).toMatch(/svenbrnn\/runpod-ollama@sha256:[0-9a-f]{64}/);
+  });
+
+  it("does not reference the mutable latest tag anywhere", () => {
+    expect(readme()).not.toContain("runpod-ollama:latest");
+  });
+
+  it("says that applying it is a RunPod-side change, so the record is not mistaken for the control", () => {
+    expect(readme()).toContain("RunPod-side change");
+  });
+});

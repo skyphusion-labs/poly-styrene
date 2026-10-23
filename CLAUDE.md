@@ -180,9 +180,13 @@ behaviour in an editor. Tracked as poly-styrene#15. The durable half of the fix 
 when the behaviour is absent, since vigilance is not a control; poly-styrene#14 adds one for the
 protection that was lost.
 
-**The Ollama image is unpinned.** The RunPod endpoint runs `svenbrnn/runpod-ollama:latest`, a
-third-party tag, so what executes on the GPU can change without a commit here. Pin a digest to make
-the GPU path reproducible.
+**The Ollama image is pinned by DIGEST, and the repo is the record rather than the control.** The
+digest is in `README.md`; the endpoint configuration lives on RunPod, so the two have to be changed
+together and this repo cannot enforce what actually runs. What it does enforce is that its own
+record does not drift back to a mutable tag, which is the thing that made the original state
+invisible: nothing anywhere said which image had run. A tag in a registry we do not control means
+the code that receives every prompt sent to the Ollama model can change with no commit here. This
+is the one place in the system where code we do not control executes with the prompt in hand.
 
 **A Workflow step return over 1 MiB is dropped.** This is why `runWorkers` downloads the attachment,
 infers and publishes inside a single step rather than splitting the download out: file bytes never

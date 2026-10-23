@@ -7,7 +7,7 @@ Ask it about protocols, configuration, debugging, detection, patching, code, and
 Two inference paths:
 
 - **Cloudflare Workers AI**, always on, through the AI Gateway `poly-styrene`. This bills per token on Cloudflare and costs nothing while idle. The default model is `@cf/zai-org/glm-4.7-flash`.
-- **One Ollama model** on a RunPod serverless endpoint, using [Sven Brnn's runpod-worker-ollama](https://github.com/SvenBrnn/runpod-worker-ollama) (`svenbrnn/runpod-ollama`, CC BY 4.0). The model is `huihui_ai/foundation-sec-abliterated` (Foundation-Sec-8B with refusals removed, 4.9GB). The worker count minimum is 0, so the GPU costs **$0/hour** at rest and **$0.58/hour** while a worker is running (16GB serverless pool). A 20GB standard network volume in EU-RO-1 keeps the weights and costs **$1.40/month**. The 20GB container disk is about **$2/month** even while the worker is scaled to zero. A cold start can take a few minutes. `/models` does not start the GPU.
+- **One Ollama model** on a RunPod serverless endpoint, using [Sven Brnn's runpod-worker-ollama](https://github.com/SvenBrnn/runpod-worker-ollama) (`svenbrnn/runpod-ollama`, CC BY 4.0, pinned by digest, see below). The model is `huihui_ai/foundation-sec-abliterated` (Foundation-Sec-8B with refusals removed, 4.9GB). The worker count minimum is 0, so the GPU costs **$0/hour** at rest and **$0.58/hour** while a worker is running (16GB serverless pool). A 20GB standard network volume in EU-RO-1 keeps the weights and costs **$1.40/month**. The 20GB container disk is about **$2/month** even while the worker is scaled to zero. A cold start can take a few minutes. `/models` does not start the GPU.
 
 The picker lists every Workers AI model the account search API returns (the live catalog is a few hundred). A typed catalog id such as `author/model` is accepted too, and it bills through the same gateway. Cloudflare does not publish a list API for the full third-party catalog, so those ids are typed, not browsed. Ollama is the one model named above, not the whole Ollama library.
 
@@ -61,3 +61,28 @@ npm test
 GNU AGPL-3.0-only. See `LICENSE`.
 
 The Ollama worker image is not part of this repo. It is CC BY 4.0, Copyright Sven Brnn, <https://github.com/SvenBrnn/runpod-worker-ollama>.
+
+## The GPU image is pinned by digest
+
+The RunPod endpoint must run the image by **digest**, not by a tag:
+
+```
+svenbrnn/runpod-ollama@sha256:b8024d800783633fb9a2740eacb880bd9ad88bd7cfe70bb31e4f541b938a5536
+```
+
+That digest was read from `registry-1.docker.io` on 2026-10-23. It is an OCI
+image index, so it holds for whatever architecture the worker runs on, and it is
+the same digest the `0.40.8` tag resolved to. Upstream publishes version tags, so
+`0.40.8` is a better reference than `latest` if a digest is impractical.
+
+**Why it matters.** A tag is mutable in a registry we do not control. Running
+`latest` means the code that receives every prompt sent to the Ollama model can
+change with no commit here, nothing going red, and no record of what ran on any
+given day. This is the one place in the system where code we do not control
+executes with the prompt in hand: the Workers AI path runs on a Cloudflare
+binding, and the Worker itself is this repo.
+
+**Applying it is a RunPod-side change.** The endpoint configuration lives on
+RunPod, not in `wrangler.jsonc`, so this file is the record and the endpoint has
+to be updated to match. Update both together, and update the digest here when
+the image is deliberately moved forward.
