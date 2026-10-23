@@ -151,18 +151,23 @@ failures, so `status()` returns `complete` and the real stack is in the `wrangle
 instead; and the AI binding always reaches remote, so a logged-in seat will be billed for a real
 inference. Reach for that before concluding a change to this file cannot be checked.
 
-**The GPU poll loop can give up while the job is still running, and nothing cancels it.** `POLLS`
-is 72 with a 10 second `step.sleep`, so the Workflow stops caring after about **12 minutes** and
-posts a give-up message. `grep -rn cancel src test scripts` returns nothing: the RunPod `/cancel`
-endpoint is never called, not on give-up, not in `reportFailure`, and not when the Workflow throws.
-A job that outlives the loop keeps running and keeps billing with nobody reading the result, and the
-give-up text invites the user to try again, so the cost is additive rather than transient.
+**An abandoned GPU job is cancelled, and that is load bearing rather than tidy.** The poll loop
+used to walk away from a live job with nothing ever calling `/cancel`, so it kept running and kept
+billing with nobody reading the result. `cancelJob` now fires on both abandoning exits: budget
+exhaustion cancels BEFORE telling the user, so what the message says about cost is true, and the
+catch around the loop cancels on any other abandonment. A job that reached a terminal state on its
+own is deliberately NOT cancelled; there is nothing to stop. Cancel reports an outcome rather than
+throwing, because it runs on paths that are already failing and must not replace the original error
+with its own.
 
-**The number it has to agree with is not in this repo.** The RunPod endpoint execution timeout is
-configured on the RunPod side, not in `wrangler.jsonc` or anywhere else here, so the poll budget and
-the endpoint timeout live in two places with only one of them in version control and nothing that
-compares them. Whoever changes `POLLS` cannot see the other number, and whoever changes the endpoint
-cannot see this one. Record the endpoint timeout here and derive the poll budget from it.
+**The poll budget is DERIVED from the endpoint timeout, never restated beside it.** That timeout
+lives on RunPod, so it is recorded as `RUNPOD_EXEC_TIMEOUT_SEC` in `wrangler.jsonc` and
+`pollPlan()` derives the count from it. **The budget must EXCEED the endpoint timeout**, so a job
+the endpoint itself kills is observed as failed rather than abandoned as pending; the sign of that
+inequality is the whole defect and it is asserted across several timeout values. The recorded
+default is a belief, not a measurement: confirm it against the endpoint and set the var. If it is
+too low the budget is merely longer than needed; if it is too high the loop still gives up early,
+but cancel now fires, so the failure is bounded rather than silent.
 
 **A deploy is only reproducible if what you deploy is a committed ref, and this repo has been
 bitten.** Behaviour that exists only in an uncommitted working tree is invisible to every normal
