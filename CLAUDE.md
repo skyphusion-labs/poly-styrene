@@ -171,11 +171,26 @@ return `null` for anything not recognised.
 
 Recorded here because a future session will otherwise rediscover it and guess.
 
-- **The Worker performs no authorization of any kind.** There is no guild, channel, role or user
-  check anywhere in `src/discord.ts`. Access control is entirely the Discord side: the app invite
-  and the channel permissions. The Ed25519 signature authenticates that the request came from
-  Discord; it says nothing about who sent it or from where. The only per-user limit is the 3 second
-  ask cooldown.
+- **Gating is at the INSTALL boundary, administered outside this repo.** Conrad restricts the bot
+  to one specific server through the Discord application install settings. That is the deliberate
+  configuration, decided 2026-10-23, not a gap waiting to be filled.
+- **An install restriction and a role allowlist are not the same control, and the difference is the
+  whole posture.** An install restriction bounds **which server** the bot can be added to. It does
+  not bound **who inside** that server may invoke it. So any member of that one server who can type
+  a slash command can ask the abliterated model anything, and the answer posts publicly in the
+  channel. That is coherent for a small trusted server; it is not equivalent to per-user gating, and
+  nothing here should be read as claiming it is. A role allowlist on `/ask` was considered and
+  deliberately not built.
+- **The Worker itself performs no authorization of any kind.** There is no guild, channel, role or
+  user check anywhere in `src/discord.ts`. The Ed25519 signature authenticates that the request came
+  from Discord; it says nothing about who sent it or from where. The only per-user limit is the 3
+  second ask cooldown.
+- **Because the gate lives outside the code, nothing in this repo can test it, and nothing will go
+  red if the bot is later added to a second server.** Do not look for the check in `src/`; there is
+  none, by decision. If the restriction is ever relaxed the control disappears silently, and the
+  only remaining limits are the cooldown and whatever Discord channel permissions do.
+- **`/lab` is the exception and keeps its own in-code role allowlist**, because it is a different
+  surface with a billed microVM behind it and it was decided separately.
 - **Answers are public in the channel**, including exploit steps.
 - **Nothing can attribute an answer to a person.** Every log line carries at most `event`,
   `provider`, `model` and `task`. No log line carries a user, guild, channel or prompt. The `pins`
