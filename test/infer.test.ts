@@ -126,3 +126,65 @@ describe("infer", () => {
     ]);
   });
 });
+
+describe("a reasoning model that never wrote an answer", () => {
+  // The real envelope from the live failure, 2026-10-23: content is null and
+  // the model's thinking sits in `reasoning`. Before this guard, extractAnswer
+  // fell through to JSON.stringify and printed the whole thing into a public
+  // Discord channel. A well-formed fixture passes on that defect, which is why
+  // this one is shaped from what actually came back.
+  const envelope = {
+    id: "chatcmpl-898ca21459b6f566",
+    object: "chat.completion",
+    model: "@cf/zai-org/glm-4.7-flash",
+    choices: [
+      {
+        index: 0,
+        message: {
+          role: "assistant",
+          content: null,
+          refusal: null,
+          reasoning: "1. Analyze the User's Request: The user is asking ...",
+        },
+      },
+    ],
+  };
+
+  it("does not print the raw envelope", () => {
+    const out = extractAnswer(envelope);
+    expect(out.text).not.toContain("chatcmpl-");
+    expect(out.text).not.toContain("chat.completion");
+    expect(out.text).not.toContain("@cf/zai-org");
+  });
+
+  it("does not present the model's reasoning as the answer", () => {
+    const out = extractAnswer(envelope);
+    expect(out.text).not.toContain("Analyze the User's Request");
+  });
+
+  it("says why there is no answer", () => {
+    const out = extractAnswer(envelope);
+    expect(out.kind).toBe("error");
+    expect(out.text.toLowerCase()).toContain("budget");
+  });
+
+  it("still reads a normal reply", () => {
+    const ok = extractAnswer({ choices: [{ message: { content: "hello" } }] });
+    expect(ok.kind).toBe("text");
+    expect(ok.text).toBe("hello");
+  });
+});
+
+describe("the chat path carries a token budget", () => {
+  it("sets max_tokens so reasoning cannot consume the whole reply", () => {
+    const built = buildWorkersInput({
+      task: "Text Generation",
+      prompt: "hi",
+      sourceLang: "",
+      targetLang: "",
+    });
+    expect(built.ok).toBe(true);
+    if (!built.ok) return;
+    expect((built.input as { max_tokens?: number }).max_tokens).toBeGreaterThan(0);
+  });
+});

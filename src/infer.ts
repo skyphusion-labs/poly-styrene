@@ -90,6 +90,14 @@ export function buildWorkersInput(args: {
         { role: "system", content: SYSTEM_PROMPT },
         { role: "user", content: args.prompt },
       ],
+      // A REASONING model spends budget thinking BEFORE it writes the answer,
+      // so an unset cap is not "no limit", it is the platform default split
+      // across both phases. @cf/zai-org/glm-4.7-flash exhausted that default
+      // mid-thought and returned content: null with a populated `reasoning`,
+      // which is how a raw envelope reached a public channel. The budget has
+      // to cover thinking AND answering. Discord truncates near 2000 chars,
+      // so the answer itself cannot usefully be longer than this either.
+      max_tokens: CHAT_MAX_TOKENS,
     },
   };
 }
@@ -111,6 +119,19 @@ function firstString(row: Record<string, unknown>, keys: string[]): string {
   return "";
 }
 
+const CHAT_MAX_TOKENS = 2048;
+
+/** True when the reply carried reasoning but no answer. Not an answer itself. */
+function readReasoning(row: Record<string, unknown>): string {
+  if (!Array.isArray(row.choices) || row.choices.length === 0) return "";
+  const first = row.choices[0];
+  if (!first || typeof first !== "object") return "";
+  const message = (first as { message?: unknown }).message;
+  if (!message || typeof message !== "object") return "";
+  const reasoning = (message as { reasoning?: unknown }).reasoning;
+  return typeof reasoning === "string" ? reasoning : "";
+}
+
 function readChoice(row: Record<string, unknown>): string {
   if (!Array.isArray(row.choices) || row.choices.length === 0) return "";
   const first = row.choices[0];
@@ -118,6 +139,10 @@ function readChoice(row: Record<string, unknown>): string {
   const message = (first as { message?: unknown; text?: unknown }).message;
   if (message && typeof message === "object") {
     const content = (message as { content?: unknown }).content;
+    // `reasoning` is the model thinking out loud. It is deliberately NOT
+    // returned here: promoting it to an answer prints an internal monologue
+    // that restates the user's own question back at them. readReasoning()
+    // reports it separately so the caller can say WHY there is no answer.
     if (typeof content === "string") return content;
     if (Array.isArray(content)) {
       const parts = content
@@ -182,7 +207,23 @@ export function extractAnswer(result: unknown, task = ""): Answer {
   if (Array.isArray(row.data) && row.data.every((item) => typeof item === "number")) {
     return { kind: "text", text: `Embedding, ${row.data.length} dimensions.` };
   }
-  return { kind: "text", text: JSON.stringify(result).slice(0, 1800) };
+  // NEVER print the raw envelope. It carries the provider's object shape,
+  // model and request ids, and whatever else the provider chose to include,
+  // into whatever channel asked. An unreadable reply is a short sentence here
+  // and a journalled event; the detail belongs in the log, not the chat.
+  const reasoning = readReasoning(row);
+  console.log(JSON.stringify({
+    event: "answer_unreadable",
+    keys: Object.keys(row).slice(0, 12),
+    had_reasoning: reasoning.length > 0,
+  }));
+  if (reasoning) {
+    return {
+      kind: "error",
+      text: "The model spent its whole budget thinking and never wrote an answer. Try a shorter question, or pin a different model with /model.",
+    };
+  }
+  return { kind: "error", text: "I could not read the model's reply." };
 }
 
 type GatewayRun = (
