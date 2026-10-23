@@ -13,7 +13,7 @@ describe("stopwatch", () => {
     watch.mark("catalog");
     watch.mark("pin");
     watch.mark("create");
-    expect(watch.splits()).toEqual({ catalog: 100, pin: 50, create: 3000, total: 3150 });
+    expect(watch.splits()).toEqual({ catalog: 100, pin: 50, create: 3000, io_total: 3150 });
   });
 
   it("accumulates a repeated name instead of overwriting it", () => {
@@ -21,14 +21,14 @@ describe("stopwatch", () => {
     watch.mark("poll");
     watch.mark("poll");
     watch.mark("done");
-    expect(watch.splits()).toEqual({ poll: 25, done: 5, total: 30 });
+    expect(watch.splits()).toEqual({ poll: 25, done: 5, io_total: 30 });
   });
 
   it("reports zero for work that does no io, which is what Workers clock freezing looks like", () => {
     const watch = stopwatch(fakeClock([500, 500, 500]));
     watch.mark("pure");
     watch.mark("alsoPure");
-    expect(watch.splits()).toEqual({ pure: 0, alsoPure: 0, total: 0 });
+    expect(watch.splits()).toEqual({ pure: 0, alsoPure: 0, io_total: 0 });
   });
 
   it("returns a copy, so a caller cannot mutate the splits", () => {
