@@ -1,4 +1,4 @@
-import { describe, expect, it } from "vitest";
+import { describe, expect, it, vi } from "vitest";
 import { buildWorkersInput, extractAnswer, preflight, runCloudflare, taskKind } from "../src/infer";
 import { SYSTEM_PROMPT } from "../src/prompt";
 
@@ -186,5 +186,139 @@ describe("the chat path carries a token budget", () => {
     expect(built.ok).toBe(true);
     if (!built.ok) return;
     expect((built.input as { max_tokens?: number }).max_tokens).toBeGreaterThan(0);
+  });
+});
+
+describe("the unreadable path, which the reasoning fixture cannot reach", () => {
+  // The fixture in the suite above carries `reasoning`, so it takes the
+  // budget branch and never reaches the final fallback. Measured on
+  // fab9706: reinstating `JSON.stringify(result)` as that fallback left the
+  // whole suite GREEN. This envelope has no reasoning, so it is the only
+  // thing that pins the branch where the raw dump used to live.
+  const opaque = { id: "chatcmpl-zzz", object: "chat.completion", model: "@cf/some/model", weird: { nested: 1 } };
+
+  it("does not print the raw envelope when there is no reasoning either", () => {
+    const out = extractAnswer(opaque);
+    expect(out.kind).toBe("error");
+    expect(out.text).not.toContain("chatcmpl-");
+    expect(out.text).not.toContain("chat.completion");
+    expect(out.text).not.toContain("nested");
+    expect(out.text).not.toContain("{");
+  });
+
+  it("says plainly that it could not read the reply", () => {
+    expect(extractAnswer(opaque).text).toBe("I could not read the model's reply.");
+  });
+});
+
+describe("a model that declines", () => {
+  // `refusal` sat right beside the null content in the envelope from the live
+  // failure, so this path is one field away from the one that already bit us.
+  // Before this, a decline was reported as "I could not read the model's
+  // reply", which blames us for something the model actually answered.
+  const declined = {
+    id: "chatcmpl-ref",
+    choices: [{ index: 0, message: { role: "assistant", content: null, refusal: "I cannot help with that." } }],
+  };
+
+  it("reports the decline, not a parse failure", () => {
+    const out = extractAnswer(declined);
+    expect(out.text).toContain("I cannot help with that.");
+    expect(out.text).toContain("declined");
+    expect(out.text).not.toContain("could not read");
+  });
+
+  it("prefers the decline over the budget explanation, since a refusal is not an exhausted budget", () => {
+    const both = {
+      choices: [
+        { message: { content: null, refusal: "No.", reasoning: "thinking about whether to answer" } },
+      ],
+    };
+    const out = extractAnswer(both);
+    expect(out.text).toContain("No.");
+    expect(out.text).not.toContain("budget");
+  });
+
+  it("ignores a blank or non-string refusal", () => {
+    expect(extractAnswer({ choices: [{ message: { content: null, refusal: "   " } }] }).text).toBe(
+      "I could not read the model's reply.",
+    );
+    expect(extractAnswer({ choices: [{ message: { content: null, refusal: 7 } }] }).text).toBe(
+      "I could not read the model's reply.",
+    );
+  });
+
+  it("still lets real content win over a refusal field", () => {
+    const out = extractAnswer({ choices: [{ message: { content: "the answer", refusal: "No." } }] });
+    expect(out.kind).toBe("text");
+    expect(out.text).toBe("the answer");
+  });
+});
+
+describe("the chat token budget is adequate, not merely present", () => {
+  // Measured on fab9706: `toBeGreaterThan(0)` passed with max_tokens set to 1,
+  // so the existing assertion could not tell a working budget from a token.
+  // A FLOOR is asserted rather than the exact value, so tuning the number
+  // stays allowed and slashing it does not.
+  it("leaves room for thinking AND answering", () => {
+    const built = buildWorkersInput({ task: "Text Generation", prompt: "hi", sourceLang: "", targetLang: "" });
+    expect(built.ok).toBe(true);
+    if (!built.ok) return;
+    const budget = (built.input as { max_tokens?: unknown }).max_tokens;
+    expect(typeof budget).toBe("number");
+    expect(budget as number).toBeGreaterThanOrEqual(1024);
+  });
+
+  // Only a live call against the real model proves the budget is big enough.
+  // This asserts the DECISION was made, which is what regressed: the chat path
+  // shipped with no cap at all while the RunPod path had one.
+  it("is set on the chat path at all, which is what was missing", () => {
+    const built = buildWorkersInput({ task: "Text Generation", prompt: "hi", sourceLang: "", targetLang: "" });
+    expect(built.ok && "max_tokens" in built.input).toBe(true);
+  });
+});
+
+describe("the log carries no model output", () => {
+  // CLAUDE.md states that no prompt and no answer is persisted by this Worker,
+  // including to a log line. That was a comment and a convention with nothing
+  // enforcing it: measured on this branch, adding the refusal text to the
+  // answer_refused event left the suite green. These pin the two log lines
+  // that sit closest to model output, because they are the ones handling it.
+  function captureLogs(run: () => void): string[] {
+    const spy = vi.spyOn(console, "log").mockImplementation(() => {});
+    try {
+      run();
+      return spy.mock.calls.map((call) => String(call[0]));
+    } finally {
+      spy.mockRestore();
+    }
+  }
+
+  it("does not log a refusal, which is the model speaking", () => {
+    const secret = "I cannot help with that particular exploit.";
+    const lines = captureLogs(() => {
+      extractAnswer({ choices: [{ message: { content: null, refusal: secret } }] });
+    });
+    expect(lines.length).toBeGreaterThan(0);
+    for (const line of lines) {
+      expect(line).not.toContain(secret);
+      expect(line).not.toContain("exploit");
+    }
+    expect(lines.join(" ")).toContain("answer_refused");
+  });
+
+  it("does not log reasoning or content on an unreadable reply", () => {
+    const thinking = "1. Analyze the User's Request about port scanning";
+    const lines = captureLogs(() => {
+      extractAnswer({ id: "chatcmpl-1", choices: [{ message: { content: null, reasoning: thinking } }] });
+    });
+    for (const line of lines) {
+      expect(line).not.toContain(thinking);
+      expect(line).not.toContain("port scanning");
+    }
+    // The shape is what gets journalled: key names and a boolean, never text.
+    const joined = lines.join(" ");
+    expect(joined).toContain("answer_unreadable");
+    expect(joined).toContain("had_reasoning");
   });
 });

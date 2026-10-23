@@ -47,6 +47,13 @@ export function preflight(
   return null;
 }
 
+/**
+ * The chat token budget, covering BOTH phases for a reasoning model: thinking
+ * first, then the answer. `test/infer.test.ts` asserts a floor rather than this
+ * exact number, so tuning it is allowed and slashing it is not.
+ */
+const CHAT_MAX_TOKENS = 2048;
+
 export function buildWorkersInput(args: {
   task: string;
   prompt: string;
@@ -119,8 +126,6 @@ function firstString(row: Record<string, unknown>, keys: string[]): string {
   return "";
 }
 
-const CHAT_MAX_TOKENS = 2048;
-
 /** True when the reply carried reasoning but no answer. Not an answer itself. */
 function readReasoning(row: Record<string, unknown>): string {
   if (!Array.isArray(row.choices) || row.choices.length === 0) return "";
@@ -130,6 +135,22 @@ function readReasoning(row: Record<string, unknown>): string {
   if (!message || typeof message !== "object") return "";
   const reasoning = (message as { reasoning?: unknown }).reasoning;
   return typeof reasoning === "string" ? reasoning : "";
+}
+
+/**
+ * The model declining, which IS a response and not a failure to parse one.
+ * An OpenAI-shaped reply carries it beside `content`, and the envelope from
+ * the live failure had `refusal: null` right next to the null content, so this
+ * path is one field away from the one that already bit us.
+ */
+function readRefusal(row: Record<string, unknown>): string {
+  if (!Array.isArray(row.choices) || row.choices.length === 0) return "";
+  const first = row.choices[0];
+  if (!first || typeof first !== "object") return "";
+  const message = (first as { message?: unknown }).message;
+  if (!message || typeof message !== "object") return "";
+  const refusal = (message as { refusal?: unknown }).refusal;
+  return typeof refusal === "string" && refusal.trim() ? refusal : "";
 }
 
 function readChoice(row: Record<string, unknown>): string {
@@ -211,6 +232,14 @@ export function extractAnswer(result: unknown, task = ""): Answer {
   // model and request ids, and whatever else the provider chose to include,
   // into whatever channel asked. An unreadable reply is a short sentence here
   // and a journalled event; the detail belongs in the log, not the chat.
+  // A refusal is the model ANSWERING, so it is reported before anything that
+  // explains a missing answer. Reported without the text in the log, because
+  // a refusal is model output and this bot does not journal that.
+  const refusal = readRefusal(row);
+  if (refusal) {
+    console.log(JSON.stringify({ event: "answer_refused" }));
+    return { kind: "error", text: `The model declined: ${refusal}` };
+  }
   const reasoning = readReasoning(row);
   console.log(JSON.stringify({
     event: "answer_unreadable",
