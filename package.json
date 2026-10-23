@@ -9,7 +9,8 @@
     "typecheck": "tsc --noEmit",
     "test": "vitest run",
     "coverage": "vitest run --coverage",
-    "register": "node scripts/register-commands.mjs"
+    "register": "node scripts/register-commands.mjs",
+    "predeploy": "node scripts/predeploy-check.mjs"
   },
   "engines": {
     "node": ">=22"
