@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { compareBundles, normalise, report, tokens } from "../scripts/predeploy-check.mjs";
+import { compareBundles, extractModule, normalise, report, tokens } from "../scripts/predeploy-check.mjs";
 
 // The defect this guards is poly-styrene#15: behaviour that exists only in an
 // uncommitted tree is invisible to `git status`, to a diff against `main`, to
@@ -105,5 +105,79 @@ describe("report", () => {
     const text = report(compareBundles("alpha", "alpha beta"));
     expect(text).toContain("SAFE");
     expect(text).not.toContain("REFUSING");
+  });
+});
+
+describe("extractModule", () => {
+  // Shaped from what the API actually returned: multipart/form-data, 2 parts,
+  // the module in the part named index.js. Measured, not assumed.
+  const BOUNDARY = "f71f0e0dd82e5873e3eb46e6f29fcc305720ce61febd345ee57eac56aed7";
+
+  function multipart(body: string, name = "index.js") {
+    return [
+      `--${BOUNDARY}`,
+      'Content-Disposition: form-data; name="metadata"',
+      "",
+      '{"main_module":"index.js"}',
+      `--${BOUNDARY}`,
+      `Content-Disposition: form-data; name="${name}"; filename="${name}"`,
+      "Content-Type: application/javascript+module",
+      "",
+      body,
+      `--${BOUNDARY}--`,
+      "",
+    ].join("\r\n");
+  }
+
+  it("pulls the module out of a two-part response", () => {
+    expect(extractModule(multipart("var x=1;"))).toBe("var x=1;");
+  });
+
+  it("passes a bare module through untouched, so it keeps working if the API stops wrapping", () => {
+    expect(extractModule("var y=2;")).toBe("var y=2;");
+  });
+
+  // THE TRAP. Multipart puts \r\n before the next delimiter and that byte
+  // belongs to the format. Keeping it produced a one-byte difference against a
+  // locally built bundle, 47343 against 47344, on every run.
+  it("removes the line ending the FORMAT added", () => {
+    expect(extractModule(multipart("var x=1;"))).not.toMatch(/\r?\n$/);
+  });
+
+  // And the other half, which is a different bug: a bundle may legitimately
+  // end in its own newline and eating that would be wrong.
+  it("keeps a newline that belongs to the CONTENT", () => {
+    expect(extractModule(multipart("var x=1;\n"))).toBe("var x=1;\n");
+  });
+
+  it("keeps newlines inside the content", () => {
+    expect(extractModule(multipart("a();\nb();\nc();"))).toBe("a();\nb();\nc();");
+  });
+
+  // Falling through to compare a boundary header against a bundle would
+  // produce confident nonsense, so this refuses and says what it saw.
+  it("fails loudly and names the parts it found when the one asked for is absent", () => {
+    expect(() => extractModule(multipart("var x=1;"), "main.js")).toThrow(/no part named "main\.js"/);
+    expect(() => extractModule(multipart("var x=1;"), "main.js")).toThrow(/metadata, index\.js/);
+  });
+
+  it("can take a differently named part", () => {
+    expect(extractModule(multipart("var z=3;", "worker.js"), "worker.js")).toBe("var z=3;");
+  });
+
+  // A one-byte trailing difference does not move a single token, which is part
+  // of why tokens were the right comparison surface rather than bytes.
+  it("leaves the token comparison unaffected by a trailing newline either way", () => {
+    const withNewline = compareBundles("alpha beta\n", "alpha beta");
+    expect(withNewline.safe).toBe(true);
+    expect(withNewline.deployedOnly).toEqual([]);
+    expect(withNewline.candidateOnly).toEqual([]);
+  });
+
+  it("end to end: a multipart response compares clean against the same module", () => {
+    const module = 'JSON.stringify({content,allowed_mentions:{parse:[]}});\n';
+    const result = compareBundles(extractModule(multipart(module)), module);
+    expect(result.safe).toBe(true);
+    expect(result.deployedOnly).toEqual([]);
   });
 });
