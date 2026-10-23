@@ -22,6 +22,11 @@ type Probe = {
   why: string;
 };
 
+/** Retries reserved for a container application that is still rolling out. */
+const PROVISION_ATTEMPTS = 6;
+const PROVISION_WAIT_MS = 5000;
+const PROVISION_PENDING = /no container instance|not running|try again later/i;
+
 const PROBES: Record<string, Probe> = {
   // THE POSITIVE CONTROL. Without this, a sandbox that is broken in some
   // unrelated way reads exactly like a sandbox that is correctly contained.
@@ -80,24 +85,56 @@ export default {
     // has no Workflow, so the probe has to catch.
     const startedAt = Date.now();
     let run;
+    let attempts = 0;
     try {
-      const stub = env.LAB.get(env.LAB.idFromName("egress-probe"));
-      const response = await stub.fetch("https://lab.invalid/run", {
-        method: "POST",
-        headers: { "content-type": "application/json" },
-        body: encodeLabRequest(probe.lang, probe.code),
-      });
-      if (!response.ok) {
-        return Response.json({
-          probe: name,
-          ok: false,
-          stage: "sandbox returned a non-2xx",
-          sandboxStatus: response.status,
-          detail: (await response.text()).slice(0, 600),
-          elapsedMs: Date.now() - startedAt,
-        });
+      // RETRY, bounded, and only on the one error that means the container
+      // application has nothing to hand out yet.
+      //
+      // Attempt 3 of this probe failed all six calls with "There is no
+      // container instance that can be provided to this Durable Object, try
+      // again later", surfacing as "exec() cannot be called on a container
+      // that is not running". A Worker deploy finishes in about a second; the
+      // container application image push and rollout do not, so curling
+      // immediately races it. "try again later" is literal advice.
+      //
+      // The attempt count is REPORTED on every response, so a success after
+      // five tries reads differently from a clean one. A retry that hides how
+      // hard it had to try converts a structural problem into a flaky one.
+      let lastErr: unknown;
+      for (attempts = 1; attempts <= PROVISION_ATTEMPTS; attempts++) {
+        try {
+          const stub = env.LAB.get(env.LAB.idFromName("egress-probe"));
+          const response = await stub.fetch("https://lab.invalid/run", {
+            method: "POST",
+            headers: { "content-type": "application/json" },
+            body: encodeLabRequest(probe.lang, probe.code),
+          });
+          if (!response.ok) {
+            return Response.json({
+              probe: name,
+              ok: false,
+              stage: "sandbox returned a non-2xx",
+              sandboxStatus: response.status,
+              detail: (await response.text()).slice(0, 600),
+              attempts,
+              elapsedMs: Date.now() - startedAt,
+            });
+          }
+          run = decodeLabResult(await response.json());
+          lastErr = undefined;
+          break;
+        } catch (err) {
+          lastErr = err;
+          const message = err instanceof Error ? err.message : String(err);
+          // Anything else is a real fault and surfaces immediately rather than
+          // being retried into a timeout.
+          if (!PROVISION_PENDING.test(message)) throw err;
+          if (attempts < PROVISION_ATTEMPTS) {
+            await new Promise((resolve) => setTimeout(resolve, PROVISION_WAIT_MS));
+          }
+        }
       }
-      run = decodeLabResult(await response.json());
+      if (lastErr) throw lastErr;
     } catch (err) {
       // The message is the whole diagnosis. A container that refuses to start
       // says so here instead of becoming an error page.
@@ -106,6 +143,7 @@ export default {
         probe: name,
         ok: false,
         stage: "the sandbox threw before returning a result",
+        attempts,
         errorName: typeof e?.name === "string" ? e.name : "unknown",
         errorMessage: typeof e?.message === "string" ? e.message.slice(0, 600) : String(err).slice(0, 600),
         firstFrame: typeof e?.stack === "string" ? (e.stack.split("\n")[1] ?? "").trim().slice(0, 300) : "",
@@ -117,6 +155,7 @@ export default {
         probe: name,
         ok: false,
         stage: "unreadable sandbox result",
+        attempts,
         elapsedMs: Date.now() - startedAt,
       });
     }
@@ -130,6 +169,7 @@ export default {
       expected: probe.expect,
       observed,
       verdict: observed === probe.expect ? "AS EXPECTED" : "UNEXPECTED, READ THIS",
+      attempts,
       elapsedMs: Date.now() - startedAt,
       exitCode: run.exitCode,
       timedOut: run.timedOut,
