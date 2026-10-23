@@ -29,4 +29,6 @@ export interface Env {
   DEFAULT_TASK: string;
   OLLAMA_MODEL: string;
   RUNPOD_ENDPOINT_ID: string;
+  /** The RunPod endpoint execution timeout in seconds. Unset falls back to the documented default. */
+  RUNPOD_EXEC_TIMEOUT_SEC?: string;
 }
