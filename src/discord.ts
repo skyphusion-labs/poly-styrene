@@ -16,6 +16,7 @@ import { labGate, labQuota, parseLab, parseRoleIds, quotaWindowStart } from "./l
 import { countLabRuns } from "./lab_journal";
 import { refreshCatalog } from "./refresh";
 import { selectValue } from "./text";
+import { stopwatch } from "./timing";
 
 export type WaitCtx = { waitUntil(promise: Promise<unknown>): void };
 
@@ -304,21 +305,42 @@ function readCool(raw: string | null): { at: number; id: string } | null {
   return { at, id: raw.slice(split + 1) };
 }
 
-async function commandAsk(interaction: Json, env: Env, place: Place): Promise<Json> {
+async function commandAsk(interaction: Json, env: Env, ctx: WaitCtx, place: Place): Promise<Json> {
   const data = dataOf(interaction);
   const options = optionsOf(data);
   const prompt = stringOpt(options, "prompt").trim();
   if (!prompt) return ephemeral("Say what you want in prompt.");
   if (prompt.length > MAX_PROMPT) return ephemeral("Prompt is limited to 4000 characters.");
 
-  const file = await readCatalog(env);
+  // Every split below is I/O TIME, not wall-clock. Workers freezes the clock
+  // except across an I/O boundary, so a zero means that step did no I/O and
+  // compute is invisible here by construction. Do not add a timer around local
+  // work expecting a number: it will read 0 and the next reader will file a bug
+  // against a correct result.
+  const watch = stopwatch();
   const override = stringOpt(options, "model").trim();
+  const coolKey = `cool:${place.userId}`;
+  const now = Date.now();
+
+  // The two reads this path needs are independent of each other, so they cost
+  // ONE round trip rather than two. The catalog is only read when an override
+  // has to be resolved against it; on the common path the pin decides the
+  // model and the catalog read was pure waste.
   let card: ModelCard | null;
+  let cooled: string | null;
   if (override) {
+    const [file, raw] = await Promise.all([readCatalog(env), env.CATALOG.get(coolKey)]);
+    watch.mark("catalogAndCooldown");
+    cooled = raw;
     card = resolveCard(file.models, override);
     if (!card) return ephemeral("I don't know that model. Run /models, or pass a catalog id like author/name.");
   } else {
-    const pin = await getPin(env.DB, place.guildId, place.channelId, place.userId);
+    const [pin, raw] = await Promise.all([
+      getPin(env.DB, place.guildId, place.channelId, place.userId),
+      env.CATALOG.get(coolKey),
+    ]);
+    watch.mark("pinAndCooldown");
+    cooled = raw;
     card = pin
       ? { id: pin.model_id, provider: pin.provider, task: pin.task, name: pin.model_id, description: "", price: "" }
       : {
@@ -354,9 +376,9 @@ async function commandAsk(interaction: Json, env: Env, place: Place): Promise<Js
     return ephemeral("Discord did not send an application id and token.");
   }
 
-  const coolKey = `cool:${place.userId}`;
-  const now = Date.now();
-  const previous = readCool(await env.CATALOG.get(coolKey));
+  // Read above, in parallel with the model lookup. Checked HERE so the order
+  // refusals are emitted in is unchanged.
+  const previous = readCool(cooled);
   if (previous && previous.id !== interactionId && now - previous.at < ASK_COOLDOWN_MS) {
     return ephemeral("Wait 3 seconds between asks.");
   }
@@ -377,6 +399,7 @@ async function commandAsk(interaction: Json, env: Env, place: Place): Promise<Js
 
   try {
     await env.ASK.create({ id: interactionId, params });
+    watch.mark("create");
   } catch (err) {
     const message = err instanceof Error ? err.message : "";
     if (message.toLowerCase().includes("already exists")) return { type: 5 };
@@ -384,7 +407,11 @@ async function commandAsk(interaction: Json, env: Env, place: Place): Promise<Js
     return ephemeral("I could not start that. Try again.");
   }
 
-  await env.CATALOG.put(coolKey, `${now}:${interactionId}`, { expirationTtl: 60 });
+  // Nobody reads the result of this before the deferral returns, so it does
+  // not belong on the response path. waitUntil still runs it to completion, so
+  // the cooldown is no less reliable than it was.
+  ctx.waitUntil(env.CATALOG.put(coolKey, `${now}:${interactionId}`, { expirationTtl: 60 }));
+  console.log(JSON.stringify({ event: "ask_io_ms", ...watch.splits() }));
   console.log(JSON.stringify({ event: "ask_started", provider: card.provider, model: card.id, task: card.task }));
   return { type: 5 };
 }
@@ -500,7 +527,7 @@ async function routeCommand(interaction: Json, env: Env, ctx: WaitCtx, place: Pl
   const name = stringField(dataOf(interaction), "name");
   if (name === "models") return commandModels(interaction, env, ctx, place);
   if (name === "model") return commandModel(interaction, env, place);
-  if (name === "ask") return commandAsk(interaction, env, place);
+  if (name === "ask") return commandAsk(interaction, env, ctx, place);
   if (name === "lab") return commandLab(interaction, env, place);
   return ephemeral("I don't know that interaction.");
 }

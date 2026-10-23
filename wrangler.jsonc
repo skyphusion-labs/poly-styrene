@@ -17,9 +17,19 @@
     "DEFAULT_TASK": "Text Generation",
     "OLLAMA_MODEL": "huihui_ai/foundation-sec-abliterated",
     "RUNPOD_ENDPOINT_ID": "5onx7evgqlku3u",
-    // Comma separated Discord role ids allowed to run /lab.
-    // EMPTY DENIES EVERYONE, which is the correct state until container
-    // egress has been confirmed dead from inside a deployed sandbox.
+    // The RunPod endpoint EXECUTION TIMEOUT in seconds. This number lives on
+    // RunPod; recorded here so the poll budget can be derived from it instead
+    // of restated beside it. CONFIRM IT AGAINST THE ENDPOINT and correct this
+    // if it differs; the code falls back to 900 when unset or unparseable.
+    "RUNPOD_EXEC_TIMEOUT_SEC": "900",
+    // Comma separated Discord role ids allowed to run /lab. EMPTY DENIES
+    // EVERYONE.
+    //
+    // Containment IS confirmed: poly-styrene#8 measured enableInternet:false
+    // honoured on the default scheduling policy, with both bracketing controls
+    // executing real code. So this is no longer empty because the sandbox is
+    // unverified. It is empty because WHO may spend money on a billed microVM
+    // is Conrad's decision, and a merge should not settle it by default.
     "LAB_ROLE_IDS": ""
   },
   "ai": {

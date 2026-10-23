@@ -14,8 +14,12 @@ type Row = {
 
 export function memoryKv() {
   const dump = new Map<string, { value: string; expirationTtl?: number }>();
+  // Reads are recorded so a test can assert a key was NOT fetched. Removing a
+  // round trip is invisible to an assertion about the response.
+  const gets: string[] = [];
   const kv = {
     async get(key: string) {
+      gets.push(key);
       return dump.get(key)?.value ?? null;
     },
     async put(key: string, value: string, opts?: { expirationTtl?: number }) {
@@ -25,7 +29,7 @@ export function memoryKv() {
       dump.delete(key);
     },
   };
-  return { kv: kv as unknown as KVNamespace, dump };
+  return { kv: kv as unknown as KVNamespace, dump, gets };
 }
 
 export function memoryDb() {

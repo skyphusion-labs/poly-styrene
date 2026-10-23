@@ -24,10 +24,10 @@ async function sendDiscord(
   let body: BodyInit;
   if (files.length === 0) {
     headers["content-type"] = "application/json";
-    body = JSON.stringify({ content });
+    body = JSON.stringify({ content, allowed_mentions: { parse: [] } });
   } else {
     const form = new FormData();
-    form.append("payload_json", JSON.stringify({ content }));
+    form.append("payload_json", JSON.stringify({ content, allowed_mentions: { parse: [] } }));
     files.forEach((file, index) => {
       form.append(`files[${index}]`, blobFrom(file.bytes, file.mime), file.filename);
     });
