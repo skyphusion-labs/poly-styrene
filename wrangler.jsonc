@@ -16,7 +16,11 @@
     "DEFAULT_MODEL": "@cf/zai-org/glm-4.7-flash",
     "DEFAULT_TASK": "Text Generation",
     "OLLAMA_MODEL": "huihui_ai/foundation-sec-abliterated",
-    "RUNPOD_ENDPOINT_ID": "5onx7evgqlku3u"
+    "RUNPOD_ENDPOINT_ID": "5onx7evgqlku3u",
+    // Comma separated Discord role ids allowed to run /lab.
+    // EMPTY DENIES EVERYONE, which is the correct state until container
+    // egress has been confirmed dead from inside a deployed sandbox.
+    "LAB_ROLE_IDS": ""
   },
   "ai": {
     "binding": "AI"
@@ -40,8 +44,46 @@
       "name": "poly-styrene-ask",
       "binding": "ASK",
       "class_name": "AskWorkflow"
+    },
+    {
+      "name": "poly-styrene-lab",
+      "binding": "LABRUN",
+      "class_name": "LabWorkflow"
     }
   ],
+  // The /lab sandbox.
+  //
+  // scheduling_policy is deliberately OMITTED, which selects `default`.
+  // max_instances is the only concurrency ceiling that survives our own code
+  // being wrong, and it is NOT supported under the `durable_object` policy.
+  // The policy is immutable once the application is created, so changing this
+  // later means replacing every running instance.
+  "containers": [
+    {
+      "class_name": "LabContainer",
+      "image": "./containers/lab/Dockerfile",
+      "instance_type": "basic",
+      "max_instances": 2
+    }
+  ],
+  // A container application needs all three of these: the container, the
+  // Durable Object binding, and the class export with SQLite storage.
+  // `exports` is mutually exclusive with `migrations`, and this Worker has no
+  // `migrations` array.
+  "durable_objects": {
+    "bindings": [
+      {
+        "name": "LAB",
+        "class_name": "LabContainer"
+      }
+    ]
+  },
+  "exports": {
+    "LabContainer": {
+      "type": "durable-object",
+      "storage": "sqlite"
+    }
+  },
   "triggers": {
     "crons": ["17 */6 * * *"]
   }

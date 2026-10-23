@@ -14,8 +14,14 @@
         "description": "cloudflare or ollama",
         "type": 3,
         "choices": [
-          { "name": "cloudflare", "value": "cloudflare" },
-          { "name": "ollama", "value": "ollama" }
+          {
+            "name": "cloudflare",
+            "value": "cloudflare"
+          },
+          {
+            "name": "ollama",
+            "value": "ollama"
+          }
         ]
       },
       {
@@ -81,6 +87,39 @@
         "name": "file",
         "description": "Image or audio, when the model needs it",
         "type": 11
+      }
+    ]
+  },
+  {
+    "name": "lab",
+    "description": "Run code in a disposable sandbox with no network",
+    "dm_permission": false,
+    "options": [
+      {
+        "name": "code",
+        "description": "What to run. No network is available inside.",
+        "type": 3,
+        "required": true,
+        "max_length": 4000
+      },
+      {
+        "name": "language",
+        "description": "Defaults to sh",
+        "type": 3,
+        "choices": [
+          {
+            "name": "sh",
+            "value": "sh"
+          },
+          {
+            "name": "python",
+            "value": "python"
+          },
+          {
+            "name": "node",
+            "value": "node"
+          }
+        ]
       }
     ]
   }

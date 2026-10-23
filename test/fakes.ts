@@ -1,4 +1,6 @@
-import type { AskParams, Env } from "../src/env";
+import type { AskParams, Env, LabParams } from "../src/env";
+import { encodeLabResult } from "../src/lab";
+import type { LabRun } from "../src/lab";
 
 type Row = {
   guild_id: string;
@@ -67,6 +69,74 @@ export function memoryDb() {
   return { db: db as unknown as D1Database, rows };
 }
 
+export type LabRowFake = {
+  id: string;
+  user_id: string;
+  guild_id: string;
+  channel_id: string;
+  instance: string;
+  started_at: string;
+  stopped_at: string | null;
+  exit_reason: string | null;
+};
+
+/**
+ * A D1 fake for the lab_sessions table.
+ *
+ * Kept separate from memoryDb rather than folded into it: the two tables are
+ * read by different code and a single fake that guesses which one a statement
+ * means would answer a question the real D1 never gets asked.
+ */
+export function memoryLabDb() {
+  const rows: LabRowFake[] = [];
+  const db = {
+    prepare(sql: string) {
+      const text = sql.replace(/\s+/g, " ").trim();
+      return {
+        bind(...args: unknown[]) {
+          return {
+            async first<T>() {
+              if (text.startsWith("SELECT COUNT(*) AS n FROM lab_sessions")) {
+                const [userId, since] = args as string[];
+                const n = rows.filter((row) => row.user_id === userId && row.started_at >= since).length;
+                return { n } as unknown as T;
+              }
+              throw new Error(`unexpected sql: ${text.slice(0, 60)}`);
+            },
+            async run() {
+              if (text.startsWith("INSERT INTO lab_sessions")) {
+                const [id, user_id, guild_id, channel_id, instance, started_at] = args as string[];
+                if (!rows.some((row) => row.id === id)) {
+                  rows.push({ id, user_id, guild_id, channel_id, instance, started_at, stopped_at: null, exit_reason: null });
+                }
+                return { success: true };
+              }
+              if (text.startsWith("UPDATE lab_sessions")) {
+                const [stopped_at, exit_reason, id] = args as string[];
+                const row = rows.find((item) => item.id === id && item.stopped_at === null);
+                if (row) {
+                  row.stopped_at = stopped_at;
+                  row.exit_reason = exit_reason;
+                }
+                return { success: true };
+              }
+              if (text.startsWith("DELETE FROM lab_sessions")) {
+                const [before] = args as string[];
+                for (let i = rows.length - 1; i >= 0; i--) {
+                  if ((rows[i] as LabRowFake).started_at < before) rows.splice(i, 1);
+                }
+                return { success: true };
+              }
+              throw new Error(`unexpected sql: ${text.slice(0, 60)}`);
+            },
+          };
+        },
+      };
+    },
+  };
+  return { db: db as unknown as D1Database, rows };
+}
+
 export function memoryAsk() {
   const created: { id: string; params: AskParams }[] = [];
   const binding = {
@@ -80,22 +150,60 @@ export function memoryAsk() {
   return { binding: binding as unknown as Workflow<AskParams>, created };
 }
 
+export function memoryLabRun() {
+  const created: { id: string; params: LabParams }[] = [];
+  const binding = {
+    async create(options?: { id?: string; params?: LabParams }) {
+      const id = options?.id ?? "";
+      if (!id) throw new Error("missing id");
+      if (created.some((item) => item.id === id)) throw new Error("instance already exists");
+      created.push({ id, params: options?.params as LabParams });
+    },
+  };
+  return { binding: binding as unknown as Workflow<LabParams>, created };
+}
+
+/** A sandbox Durable Object namespace fake that answers with a canned run. */
+export function memoryLabNamespace(run: LabRun = { stdout: "ok", stderr: "", exitCode: 0, timedOut: false }) {
+  const asked: { name: string; body: string }[] = [];
+  const namespace = {
+    idFromName(name: string) {
+      return { name } as unknown as DurableObjectId;
+    },
+    getByName(name: string) {
+      return {
+        async fetch(input: RequestInfo, init?: RequestInit) {
+          const body = typeof init?.body === "string" ? init.body : "";
+          asked.push({ name, body });
+          return new Response(encodeLabResult(run), { headers: { "content-type": "application/json" } });
+        },
+      } as unknown as DurableObjectStub;
+    },
+  };
+  return { namespace: namespace as unknown as DurableObjectNamespace, asked };
+}
+
 export function testEnv(over: Partial<Env> = {}) {
   const catalog = memoryKv();
   const pins = memoryDb();
   const ask = memoryAsk();
+  const labRun = memoryLabRun();
+  const lab = memoryLabNamespace();
   const env = {
     AI: {},
     DB: pins.db,
     CATALOG: catalog.kv,
     ASK: ask.binding,
+    LABRUN: labRun.binding,
+    LAB: lab.namespace,
     GATEWAY_ID: "poly-styrene",
     ACCOUNT_ID: "account",
     DEFAULT_MODEL: "@cf/zai-org/glm-4.7-flash",
     DEFAULT_TASK: "Text Generation",
     OLLAMA_MODEL: "qwen2.5-coder:7b",
     RUNPOD_ENDPOINT_ID: "",
+    LAB_ROLE_IDS: "",
     ...over,
   } as Env;
-  return { env, catalog, pins, ask };
+  return { env, catalog, pins, ask, labRun, lab };
 }
