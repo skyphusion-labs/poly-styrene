@@ -92,4 +92,37 @@ describe("infer", () => {
       options: { gateway: { id: "poly-styrene", skipCache: true } },
     });
   });
+
+  // The test above passes whether or not the call keeps its receiver, because
+  // its stub is an ARROW function and never touches `this`. A detached arrow
+  // behaves exactly like a bound one, so the stub could not fail the way the
+  // real binding fails. In production every /ask on the Workers AI path threw
+  // "Cannot set properties of undefined (setting '#options')" from
+  // cloudflare-internal:ai-api, because the real binding assigns to a private
+  // field on `this` and `this` was undefined.
+  //
+  // This stub uses a private field for exactly that reason: it is the smallest
+  // thing that can tell a bound call from a detached one.
+  it("calls run ON the binding, so the receiver survives", async () => {
+    class FakeAi {
+      #seen: unknown[] = [];
+      async run(model: string, input: unknown, options: unknown): Promise<unknown> {
+        this.#seen.push({ model, input, options });
+        return { response: "ok" };
+      }
+      seen(): unknown[] {
+        return this.#seen;
+      }
+    }
+    const binding = new FakeAi();
+    const result = await runCloudflare(binding as unknown as Ai, "author/model", { messages: [] }, "poly-styrene");
+    expect(result).toEqual({ response: "ok" });
+    expect(binding.seen()).toEqual([
+      {
+        model: "author/model",
+        input: { messages: [] },
+        options: { gateway: { id: "poly-styrene", skipCache: true } },
+      },
+    ]);
+  });
 });

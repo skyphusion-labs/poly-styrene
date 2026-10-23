@@ -14,6 +14,7 @@ import type { AskParams, Env } from "./env";
 import { preflight, taskKind } from "./infer";
 import { refreshCatalog } from "./refresh";
 import { selectValue } from "./text";
+import { stopwatch } from "./timing";
 
 export type WaitCtx = { waitUntil(promise: Promise<unknown>): void };
 
@@ -302,7 +303,14 @@ async function commandAsk(interaction: Json, env: Env, place: Place): Promise<Js
   if (!prompt) return ephemeral("Say what you want in prompt.");
   if (prompt.length > MAX_PROMPT) return ephemeral("Prompt is limited to 4000 characters.");
 
+  // Diagnostic only, no behaviour change. A /ask was observed spending
+  // 10,690 ms of wall time against 4 ms of CPU before reaching ask_started,
+  // which is I/O, and five sequential awaits sit on that path. This says
+  // WHICH one. Workers freezes the clock except across I/O, so a zero split
+  // means that step did none.
+  const watch = stopwatch();
   const file = await readCatalog(env);
+  watch.mark("catalog");
   const override = stringOpt(options, "model").trim();
   let card: ModelCard | null;
   if (override) {
@@ -310,6 +318,7 @@ async function commandAsk(interaction: Json, env: Env, place: Place): Promise<Js
     if (!card) return ephemeral("I don't know that model. Run /models, or pass a catalog id like author/name.");
   } else {
     const pin = await getPin(env.DB, place.guildId, place.channelId, place.userId);
+    watch.mark("pin");
     card = pin
       ? { id: pin.model_id, provider: pin.provider, task: pin.task, name: pin.model_id, description: "", price: "" }
       : {
@@ -348,6 +357,7 @@ async function commandAsk(interaction: Json, env: Env, place: Place): Promise<Js
   const coolKey = `cool:${place.userId}`;
   const now = Date.now();
   const previous = readCool(await env.CATALOG.get(coolKey));
+  watch.mark("cooldownGet");
   if (previous && previous.id !== interactionId && now - previous.at < ASK_COOLDOWN_MS) {
     return ephemeral("Wait 3 seconds between asks.");
   }
@@ -368,6 +378,7 @@ async function commandAsk(interaction: Json, env: Env, place: Place): Promise<Js
 
   try {
     await env.ASK.create({ id: interactionId, params });
+    watch.mark("create");
   } catch (err) {
     const message = err instanceof Error ? err.message : "";
     if (message.toLowerCase().includes("already exists")) return { type: 5 };
@@ -376,6 +387,8 @@ async function commandAsk(interaction: Json, env: Env, place: Place): Promise<Js
   }
 
   await env.CATALOG.put(coolKey, `${now}:${interactionId}`, { expirationTtl: 60 });
+  watch.mark("cooldownPut");
+  console.log(JSON.stringify({ event: "ask_timing", ...watch.splits() }));
   console.log(JSON.stringify({ event: "ask_started", provider: card.provider, model: card.id, task: card.task }));
   return { type: 5 };
 }
