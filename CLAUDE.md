@@ -126,8 +126,16 @@ coverage 80.31%, and `workflow.ts` is **0% of 174 lines, uncovered 8 to 167**. `
 the same reason. So the GPU submit, the poll loop, the deferral publish and the failure report are
 covered by **reading only**. Logic that can be tested belongs in `infer.ts`, `runpod.ts`, `text.ts`
 or `discord_rest.ts`, which are pure and well covered; `workflow.ts` should stay a thin orchestrator
-so that the untestable surface stays small. Treat any change to it as unverified until exercised
-against a real Discord interaction.
+so that the untestable surface stays small.
+
+**But untestable means untestable BY VITEST, not unexercisable.** The module can be driven by a
+throwaway worker under `wrangler dev`, which is a real workerd: a `main` that re-exports
+`AskWorkflow`, a `workflows` binding pointing at it, and one request that calls `create()` and polls
+`status()`. That needs no credential and nothing deployed, and it is how the `#options` defect was
+reproduced rather than theorised. Two things to know when you do it: `run()` catches its own
+failures, so `status()` returns `complete` and the real stack is in the `wrangler dev` output
+instead; and the AI binding always reaches remote, so a logged-in seat will be billed for a real
+inference. Reach for that before concluding a change to this file cannot be checked.
 
 **The GPU poll loop can give up while the job is still running, and nothing cancels it.** `POLLS`
 is 72 with a 10 second `step.sleep`, so the Workflow stops caring after about **12 minutes** and
