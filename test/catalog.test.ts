@@ -52,7 +52,8 @@ describe("catalog", () => {
     expect(findModel(models, selectValue(long))?.id).toBe(long);
     expect(modelFromId("openai/gpt-5.5")?.provider).toBe("cloudflare");
     expect(modelFromId("@cf/foo/bar")?.task).toBe("Text Generation");
-    expect(modelFromId("qwen2.5-coder:7b")?.provider).toBe("ollama");
+    // A typed colon id no longer reaches the GPU; see "a typed id cannot reach the GPU".
+    expect(modelFromId("qwen2.5-coder:7b")).toBeNull();
     expect(modelFromId("hello")).toBeNull();
     expect(modelFromId("x".repeat(201))).toBeNull();
     expect(mergeOllama([card("qwen2.5-coder:7b", "Text Generation", "ollama")], "qwen2.5-coder:7b")).toHaveLength(1);
@@ -70,5 +71,41 @@ describe("catalog", () => {
     catalog.dump.set("catalog:v1", { value: "not json" });
     const broken = await readCatalog(env);
     expect(broken.models.map((model) => model.id)).toEqual(["qwen2.5-coder:7b"]);
+  });
+});
+
+describe("a typed id cannot reach the GPU", () => {
+  // Removed because any string with a colon reached the RunPod path, and
+  // RUNPOD_API_KEY is set in production, so the spend gate passed. One GPU
+  // cold start per request, from any member, rate-limited only by the 3s
+  // cooldown. These cases are shaped from what an attacker would type, not
+  // from a well-formed id.
+  it("refuses an arbitrary colon id", () => {
+    expect(modelFromId("anything:x")).toBeNull();
+    expect(modelFromId("llama3:70b")).toBeNull();
+    expect(modelFromId("a:b:c:d")).toBeNull();
+  });
+
+  it("still reaches the configured model, but through the CATALOG", () => {
+    // This is the path that must keep working. mergeOllama() puts the one
+    // configured model into the catalog and resolveCard() finds it there, so
+    // removing the typed route costs nothing a user legitimately needs.
+    const merged = mergeOllama([], "huihui_ai/foundation-sec-abliterated");
+    expect(merged).toHaveLength(1);
+    expect(merged[0].provider).toBe("ollama");
+    // And typing that same id directly does NOT mint a card.
+    expect(modelFromId("huihui_ai/foundation-sec-abliterated")).toBeNull();
+  });
+
+  it("still accepts a Workers AI catalog id", () => {
+    const card = modelFromId("@cf/zai-org/glm-4.7-flash");
+    expect(card).not.toBeNull();
+    expect(card?.provider).toBe("cloudflare");
+  });
+
+  it("never returns an ollama provider from a typed id", () => {
+    for (const probe of ["x:y", "@cf/a/b", "ns/name:tag", "huihui_ai/foundation-sec-abliterated"]) {
+      expect(modelFromId(probe)?.provider ?? "cloudflare").not.toBe("ollama");
+    }
   });
 });

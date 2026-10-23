@@ -138,9 +138,13 @@ export function modelFromId(raw: string): ModelCard | null {
       price: "",
     };
   }
-  if (/^[A-Za-z0-9._:-]+$/.test(id) && id.includes(":")) {
-    return ollamaCard(id);
-  }
+  // A TYPED ID CANNOT REACH THE GPU. This used to map any string containing
+  // a colon to the Ollama card, which meant `/ask model:anything:x` submitted
+  // a RunPod job: a GPU cold start per request, bounded only by the 3 second
+  // per-user cooldown, from any member who can type a slash command. The
+  // configured Ollama model is still reachable, because mergeOllama() puts it
+  // in the catalog and resolveCard() finds it there; what is gone is pinning
+  // an ARBITRARY one by typing it.
   return null;
 }
 
