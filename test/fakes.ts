@@ -12,6 +12,40 @@ type Row = {
   updated_at: string;
 };
 
+/**
+ * A promise the TEST releases, with a backstop so a regression fails instead
+ * of hanging.
+ *
+ * Use this whenever a fake has to actually defer, which is whenever the
+ * assertion is about ORDERING rather than about the fact of a call. Every
+ * shared fake in this file is synchronous on purpose and therefore cannot
+ * support such an assertion; see the notes on `memoryAsk` and `memoryLabRun`.
+ *
+ * TWO THINGS THIS EXISTS TO STOP YOU REDISCOVERING.
+ *
+ * A zero-delay timer is NOT a reliable "later". Gating a fake on
+ * `setTimeout(resolve, 0)` looks like it defers until the next tick, but
+ * `handleDiscord` awaits `crypto.subtle.verify`, which yields far enough for
+ * that timer to fire first. The gate is then already open when the assertion
+ * runs and the test passes for no reason at all, which is worse than failing.
+ *
+ * And a gate that NEVER resolves turns a regression into a hang. A timeout
+ * reports worse than a clean assertion: it says the suite is broken rather
+ * than naming the behaviour that changed. Hence the backstop, which is why
+ * this is a helper rather than four lines copied per test.
+ *
+ * The cost is that a genuine regression takes `backstopMs` to fail. That is
+ * the right trade: a slow clean failure beats a fast meaningless pass.
+ */
+export function deferredGate(backstopMs = 2000) {
+  let release: () => void = () => {};
+  const promise = new Promise<void>((resolve) => {
+    release = resolve;
+    setTimeout(resolve, backstopMs);
+  });
+  return { promise, release: () => release() };
+}
+
 export function memoryKv() {
   const dump = new Map<string, { value: string; expirationTtl?: number }>();
   // Reads are recorded so a test can assert a key was NOT fetched. Removing a
