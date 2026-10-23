@@ -199,6 +199,12 @@ export async function runCloudflare(
   input: Record<string, unknown>,
   gatewayId: string,
 ): Promise<unknown> {
-  const run = ai.run as unknown as GatewayRun;
-  return run(model, input, { gateway: { id: gatewayId, skipCache: true } });
+  // Call through the binding, so `this` inside the AI binding IS the binding.
+  // Hoisting `ai.run` into a local and calling it bare detaches the receiver,
+  // and the binding's own `run` then assigns to a private field on undefined:
+  // "Cannot set properties of undefined (setting '#options')" thrown from
+  // cloudflare-internal:ai-api. The cast has to land on the OBJECT so the
+  // gateway option stays typed without losing the receiver.
+  const gateway = ai as unknown as { run: GatewayRun };
+  return gateway.run(model, input, { gateway: { id: gatewayId, skipCache: true } });
 }
