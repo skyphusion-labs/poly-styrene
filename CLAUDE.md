@@ -142,6 +142,14 @@ with bracketing controls executing real code either side of four network probes 
 A contained container and one whose egress silently works look identical from the Worker side, so
 if that flag is ever changed, re-run that probe rather than reasoning about it.
 
+**The probe lives on the branch `probe/container-egress`, which is DELIBERATELY NOT MERGED and must
+not be pruned.** It is not on `main`, so the sentence above is otherwise an instruction nobody can
+follow. It drives the real `LabContainer` with the real `labStartOptions()` and the real image,
+which is what makes its answer transfer to `/lab` rather than being a fact about some other
+container, and it brackets the four network probes with a control that executes real code at each
+end. Read poly-styrene#8 for the full method, including the two-delete teardown and the
+`provisioning` readiness gate, both of which cost an attempt to learn.
+
 **Teardown is a platform property, not our diligence, and three things would defeat it.** Cloudflare
 stops the instance shortly after the Durable Object goes inactive, and **code running inside an
 instance does not count as activity**, so a runaway cannot keep itself alive and a dead Workflow
