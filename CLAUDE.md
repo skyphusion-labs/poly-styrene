@@ -203,6 +203,25 @@ around local work expecting a number**: it will correctly read 0, and the next r
 bug against a correct result. If CPU time is ever the question, `wrangler tail` reports `cpuTime`
 and that is the right instrument.
 
+**The Workflow create is NOT on the response path, and that is the point rather than a detail.**
+It was the only unbounded call left on a path with a hard deadline. Measured on script `84fbf3a8`:
+`create` 702 ms of a 998 ms `io_total`, so it dominated the remaining budget and nothing bounds its
+tail. It now runs in `ctx.waitUntil` via `startAsk`, **and a failure there is reported through
+`publishAnswer`** on the interaction token, the same route `reportFailure` uses, so the user gets a
+visible error a second late instead of a deferral that never resolves. A Discord retry colliding on
+`already exists` is silent, because the user already has their deferral.
+
+**Create latency is still logged, separately, as `ask_create_ms`.** Moving work off a measured path
+must not make it unobservable, or the fix hides the thing it was aimed at. `ask_io_ms` is the
+response-path budget and no longer carries a `create` split; a test asserts both of those.
+
+**Testing it needs a fake whose `create` genuinely defers.** `memoryAsk.create` has no `await` in
+its body, so it completes SYNCHRONOUSLY and every assertion about `created` passes whether the
+create is awaited or deferred. A zero-delay timer gate does not work either, because `handleDiscord`
+awaits `crypto.subtle.verify` and that yields far enough for the timer to fire first. The working
+shape is an explicitly released gate with a timeout backstop, so a regression fails cleanly rather
+than hanging. This is the same stub-shape blindness that hid the AI binding receiver bug.
+
 **The response path is held to two sequential round trips, and that is a budget, not an accident.**
 The catalog is read only when an override has to be resolved against it, the pin and the cooldown
 are read in one `Promise.all`, and the cooldown write goes to `ctx.waitUntil` because nobody reads

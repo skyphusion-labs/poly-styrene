@@ -11,6 +11,7 @@ import {
 } from "./catalog";
 import { clearPin, getPin, setPin } from "./db";
 import type { AskParams, Env, LabParams } from "./env";
+import { publishAnswer } from "./discord_rest";
 import { preflight, taskKind } from "./infer";
 import { labGate, labQuota, parseLab, parseRoleIds, quotaWindowStart } from "./lab";
 import { countLabRuns } from "./lab_journal";
@@ -397,23 +398,57 @@ async function commandAsk(interaction: Json, env: Env, ctx: WaitCtx, place: Plac
     attachmentType: attachment?.mime ?? "",
   };
 
-  try {
-    await env.ASK.create({ id: interactionId, params });
-    watch.mark("create");
-  } catch (err) {
-    const message = err instanceof Error ? err.message : "";
-    if (message.toLowerCase().includes("already exists")) return { type: 5 };
-    console.log(JSON.stringify({ event: "ask_create_failed", provider: card.provider, model: card.id, task: card.task }));
-    return ephemeral("I could not start that. Try again.");
-  }
+  // The Workflow create is the only UNBOUNDED call left on a path with a hard
+  // 3 second deadline, so it comes off it. Measured on script 84fbf3a8:
+  // create 702 ms of a 998 ms io_total, so it is both the dominant item and
+  // the one whose tail nothing bounds.
+  //
+  // The objection is real and answered rather than waved away: if the create
+  // then fails, the user holds a deferral that never resolves, which is worse
+  // than a timeout because nothing tells them. startAsk reports the failure
+  // through publishAnswer, the same route reportFailure already uses, so the
+  // outcome is a visible error arriving a second late instead of silence. The
+  // only thing genuinely lost is the EPHEMERAL refusal, because the deferral
+  // has already been acknowledged publicly by then.
+  ctx.waitUntil(startAsk(env, interactionId, params, card));
 
   // Nobody reads the result of this before the deferral returns, so it does
   // not belong on the response path. waitUntil still runs it to completion, so
   // the cooldown is no less reliable than it was.
   ctx.waitUntil(env.CATALOG.put(coolKey, `${now}:${interactionId}`, { expirationTtl: 60 }));
   console.log(JSON.stringify({ event: "ask_io_ms", ...watch.splits() }));
-  console.log(JSON.stringify({ event: "ask_started", provider: card.provider, model: card.id, task: card.task }));
   return { type: 5 };
+}
+
+/**
+ * Start the Workflow off the response path, and make a failure VISIBLE.
+ *
+ * `ask_create_ms` is logged rather than dropped. Moving work off a measured
+ * path must not make it unobservable, or the fix hides the thing it was aimed
+ * at and the next person asking how long create takes has no answer at all.
+ */
+async function startAsk(env: Env, id: string, params: AskParams, card: ModelCard): Promise<void> {
+  const at = Date.now();
+  try {
+    await env.ASK.create({ id, params });
+    console.log(JSON.stringify({ event: "ask_create_ms", ms: Date.now() - at }));
+    console.log(JSON.stringify({ event: "ask_started", provider: card.provider, model: card.id, task: card.task }));
+  } catch (err) {
+    const message = err instanceof Error ? err.message : "";
+    // Discord retried an interaction it thought it lost. The instance already
+    // exists, the user already has their deferral, and there is nothing to say.
+    if (message.toLowerCase().includes("already exists")) return;
+    console.log(JSON.stringify({ event: "ask_create_failed", provider: card.provider, model: card.id, task: card.task }));
+    try {
+      await publishAnswer({
+        applicationId: params.applicationId,
+        interactionToken: params.interactionToken,
+        text: "I could not start that. Try again.",
+      });
+    } catch {
+      console.log(JSON.stringify({ event: "ask_create_report_failed", provider: card.provider, model: card.id, task: card.task }));
+    }
+  }
 }
 
 async function commandLab(interaction: Json, env: Env, place: Place): Promise<Json> {

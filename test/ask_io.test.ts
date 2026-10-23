@@ -1,5 +1,5 @@
 import { generateKeyPairSync, sign } from "node:crypto";
-import { describe, expect, it } from "vitest";
+import { describe, expect, it, vi } from "vitest";
 import { CATALOG_KEY } from "../src/catalog";
 import { handleDiscord } from "../src/discord";
 import { setPin } from "../src/db";
@@ -102,5 +102,169 @@ describe("the /ask response path does no unnecessary io", () => {
     });
     await post(env, askInteraction([{ name: "prompt", value: "hello" }]));
     expect(ask.created[0]?.params.modelId).toBe("@cf/pinned/model");
+  });
+});
+
+describe("the Workflow create is NOT on the response path", () => {
+  // memoryAsk's create has no `await` in its body, so it completes
+  // SYNCHRONOUSLY and every existing test passes whether the create is
+  // awaited or deferred. That is the same stub-shape blindness that hid the AI
+  // binding receiver bug: a fake that cannot behave like the real thing cannot
+  // observe the defect. So this uses a create that genuinely defers.
+  function deferredAsk() {
+    const created: string[] = [];
+    // The gate is released EXPLICITLY by the test, not by a timer.
+    //
+    // A `setTimeout(resolve, 0)` gate did not work and the reason is worth
+    // recording: `handleDiscord` awaits `crypto.subtle.verify`, which yields
+    // far enough for a zero-delay macrotask to fire, so the gate was already
+    // open by the time the assertion ran and the test passed for no reason.
+    // That is a discriminator that does not discriminate.
+    //
+    // The 2 second backstop exists so that putting the create back on the
+    // response path FAILS rather than HANGS: an awaited create blocks until
+    // the backstop, then the assertion fails cleanly. A never-resolving gate
+    // would turn a regression into a timeout, which reports worse.
+    let release: () => void = () => {};
+    const gate = new Promise<void>((resolve) => {
+      release = resolve;
+      setTimeout(resolve, 2000);
+    });
+    const binding = {
+      async create(options?: { id?: string }) {
+        await gate;
+        created.push(options?.id ?? "");
+      },
+    };
+    return { binding, created, release: () => release() };
+  }
+
+  it("returns the deferral BEFORE the create has completed", async () => {
+    const ask = deferredAsk();
+    const { env } = testEnv({ DISCORD_PUBLIC_KEY: publicHex, ASK: ask.binding as never });
+    const waited: Promise<unknown>[] = [];
+    const response = await handleDiscord(
+      signed(JSON.stringify(askInteraction([{ name: "prompt", value: "hello" }]))),
+      env,
+      { waitUntil(p: Promise<unknown>) { waited.push(p); } },
+    );
+
+    expect(JSON.parse(await response.text())).toEqual({ type: 5 });
+    // THE ASSERTION THAT MATTERS: the 3 second budget was spent without
+    // waiting for the create.
+    expect(ask.created).toEqual([]);
+
+    // And it still happens, so this is deferral and not loss.
+    ask.release();
+    await Promise.all(waited);
+    expect(ask.created).toHaveLength(1);
+  });
+
+  it("still starts exactly one Workflow per interaction", async () => {
+    const ask = deferredAsk();
+    const { env } = testEnv({ DISCORD_PUBLIC_KEY: publicHex, ASK: ask.binding as never });
+    const waited: Promise<unknown>[] = [];
+    const ctx = { waitUntil(p: Promise<unknown>) { waited.push(p); } };
+    const payload = askInteraction([{ name: "prompt", value: "hello" }]);
+    await handleDiscord(signed(JSON.stringify(payload)), env, ctx);
+    ask.release();
+    await Promise.all(waited);
+    expect(ask.created).toHaveLength(1);
+  });
+});
+
+describe("a create failure is reported, not swallowed", () => {
+  // The whole objection to moving the create off the response path is that a
+  // failure leaves a deferral nobody resolves. These pin the answer.
+  function failingAsk(message: string) {
+    return {
+      async create() {
+        await new Promise<void>((resolve) => setTimeout(resolve, 0));
+        throw new Error(message);
+      },
+    };
+  }
+
+  it("tells the user through the interaction token when the create fails", async () => {
+    const calls: { url: string; body: string }[] = [];
+    vi.stubGlobal("fetch", async (input: RequestInfo | URL, init?: RequestInit) => {
+      calls.push({ url: String(input), body: String(init?.body ?? "") });
+      return new Response("{}", { status: 200 });
+    });
+    try {
+      const { env } = testEnv({ DISCORD_PUBLIC_KEY: publicHex, ASK: failingAsk("boom") as never });
+      const waited: Promise<unknown>[] = [];
+      const response = await handleDiscord(
+        signed(JSON.stringify(askInteraction([{ name: "prompt", value: "hello" }]))),
+        env,
+        { waitUntil(p: Promise<unknown>) { waited.push(p); } },
+      );
+      // The deferral still went out; the user is not left with nothing.
+      expect(JSON.parse(await response.text())).toEqual({ type: 5 });
+      await Promise.all(waited);
+      expect(calls).toHaveLength(1);
+      expect(calls[0]?.url).toContain("/messages/@original");
+      expect(calls[0]?.body).toContain("could not start that");
+    } finally {
+      vi.unstubAllGlobals();
+    }
+  });
+
+  // A Discord retry is not a failure and must not produce a second message.
+  it("says nothing when the instance already exists", async () => {
+    const calls: string[] = [];
+    vi.stubGlobal("fetch", async (input: RequestInfo | URL) => {
+      calls.push(String(input));
+      return new Response("{}", { status: 200 });
+    });
+    try {
+      const { env } = testEnv({
+        DISCORD_PUBLIC_KEY: publicHex,
+        ASK: failingAsk("instance already exists") as never,
+      });
+      const waited: Promise<unknown>[] = [];
+      await handleDiscord(
+        signed(JSON.stringify(askInteraction([{ name: "prompt", value: "hello" }]))),
+        env,
+        { waitUntil(p: Promise<unknown>) { waited.push(p); } },
+      );
+      await Promise.all(waited);
+      expect(calls).toEqual([]);
+    } finally {
+      vi.unstubAllGlobals();
+    }
+  });
+});
+
+describe("moving the create off the path did not make it unobservable", () => {
+  // Measured: removing the ask_create_ms log left the whole suite GREEN, so
+  // the argument that "moving work off a measured path must not hide it" was
+  // an assertion about intent and nothing enforced it. This enforces it.
+  it("logs ask_create_ms so create latency is still measurable", async () => {
+    const lines: string[] = [];
+    const spy = vi.spyOn(console, "log").mockImplementation((...args: unknown[]) => {
+      lines.push(String(args[0]));
+    });
+    try {
+      const { env } = testEnv({ DISCORD_PUBLIC_KEY: publicHex });
+      const waited: Promise<unknown>[] = [];
+      await handleDiscord(
+        signed(JSON.stringify(askInteraction([{ name: "prompt", value: "hello" }]))),
+        env,
+        { waitUntil(p: Promise<unknown>) { waited.push(p); } },
+      );
+      await Promise.all(waited);
+      const joined = lines.join(" ");
+      expect(joined).toContain("ask_create_ms");
+      // And the response-path budget line is still emitted, separately, so
+      // the two measurements do not collapse into one.
+      expect(joined).toContain("ask_io_ms");
+      // The create is no longer part of the response-path budget, so it must
+      // not reappear as a split in it.
+      const io = lines.find((l) => l.includes("ask_io_ms")) ?? "";
+      expect(io).not.toContain('"create"');
+    } finally {
+      spy.mockRestore();
+    }
   });
 });
