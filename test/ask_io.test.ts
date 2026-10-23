@@ -3,7 +3,7 @@ import { describe, expect, it, vi } from "vitest";
 import { CATALOG_KEY } from "../src/catalog";
 import { handleDiscord } from "../src/discord";
 import { setPin } from "../src/db";
-import { testEnv } from "./fakes";
+import { deferredGate, testEnv } from "./fakes";
 
 // /ask answers inside Discord's 3 second interaction deadline, and NO TEST IN
 // THIS REPO CAN FAIL A DEADLINE: every fake answers instantly. So the thing
@@ -113,30 +113,16 @@ describe("the Workflow create is NOT on the response path", () => {
   // observe the defect. So this uses a create that genuinely defers.
   function deferredAsk() {
     const created: string[] = [];
-    // The gate is released EXPLICITLY by the test, not by a timer.
-    //
-    // A `setTimeout(resolve, 0)` gate did not work and the reason is worth
-    // recording: `handleDiscord` awaits `crypto.subtle.verify`, which yields
-    // far enough for a zero-delay macrotask to fire, so the gate was already
-    // open by the time the assertion ran and the test passed for no reason.
-    // That is a discriminator that does not discriminate.
-    //
-    // The 2 second backstop exists so that putting the create back on the
-    // response path FAILS rather than HANGS: an awaited create blocks until
-    // the backstop, then the assertion fails cleanly. A never-resolving gate
-    // would turn a regression into a timeout, which reports worse.
-    let release: () => void = () => {};
-    const gate = new Promise<void>((resolve) => {
-      release = resolve;
-      setTimeout(resolve, 2000);
-    });
+    // deferredGate carries the reasoning, including why a zero-delay timer
+    // does not work here and why the backstop exists.
+    const gate = deferredGate();
     const binding = {
       async create(options?: { id?: string }) {
-        await gate;
+        await gate.promise;
         created.push(options?.id ?? "");
       },
     };
-    return { binding, created, release: () => release() };
+    return { binding, created, release: gate.release };
   }
 
   it("returns the deferral BEFORE the create has completed", async () => {
