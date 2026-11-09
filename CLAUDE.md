@@ -5,17 +5,18 @@ engineering and threat intelligence questions, and when a question calls for an 
 command it gives them, marked for defense, detection or authorized testing. Named after Marianne
 Joan Elliott-Said of X-Ray Spex.
 
-One Cloudflare Worker is the entire server side. There is no Discord gateway process, no bot
-container, and nothing that holds a socket. Read `README.md` for the product surface; this file is
-the operator contract.
+One Cloudflare Worker is the Discord server side. There is no Discord gateway process and no
+bot process holding a gateway socket. `/lab` is a separate Cloudflare Container, described below.
+Read `README.md` for the product surface; this file is the operator contract.
 
 ## Architecture
 
 Slash commands arrive as HTTP interactions on `POST /discord`. That is the only inbound path that
 does work.
 
-- **`src/index.ts`** is the only module Wrangler loads. It exports the `fetch` handler, the
-  `scheduled` handler for the catalog cron, and re-exports `AskWorkflow`.
+- **`src/index.ts`** is the only module Wrangler loads. It exports the `fetch` handler and the
+  `scheduled` handler (catalog refresh, and the lab-journal prune), and re-exports `AskWorkflow`,
+  `LabWorkflow`, and `LabContainer`.
 - **`src/server.ts`** routes three paths and nothing else: `/discord`, `/health`, and a plain-text
   root.
 - **`src/discord.ts`** verifies the Ed25519 signature, then routes by interaction type: 1 ping,
@@ -39,8 +40,8 @@ catch to swallow other create failures.
 
 | Path | Where | Cost at rest | Notes |
 | --- | --- | --- | --- |
-| Cloudflare Workers AI | `env.AI.run` through AI Gateway `poly-styrene` | nothing | always on, per token |
-| One Ollama model | RunPod serverless, `POST /run` then poll `/status/{id}` | $0/hour GPU | scales to zero, cold start of minutes |
+| Cloudflare Workers AI | `env.AI.run` through AI Gateway `poly-styrene` | nothing | always on, per token; unpinned default is `@cf/zai-org/glm-4.7-flash` (`DEFAULT_MODEL`, task `Text Generation`) |
+| One Ollama model | RunPod serverless, `POST /run` then poll `/status/{id}` | $0/hour GPU | `huihui_ai/foundation-sec-abliterated` (`OLLAMA_MODEL`); scales to zero, cold start of minutes |
 
 `src/infer.ts` builds and reads the Workers AI call. `src/runpod.ts` builds the Ollama chat body and
 interprets a RunPod status payload. `src/catalog.ts` is the model catalog and the id parser.
@@ -53,9 +54,10 @@ gives on either path.
 
 ## State
 
-**The only durable state is one D1 table, `pins`** (`migrations/0001_pins.sql`), keyed
-`(guild_id, channel_id, user_id)` and holding the pinned provider, model id, task and an
-`updated_at`. That is the whole schema.
+**Durable D1 state is two tables.** `pins` (`migrations/0001_pins.sql`) is keyed
+`(guild_id, channel_id, user_id)` and holds the pinned provider, model id, task and an
+`updated_at`. `lab_sessions` (`migrations/0002_lab_sessions.sql`) is the /lab journal
+(who, where, which instance, when, and how it ended; not the code and not the output).
 
 **No prompt and no answer is persisted by this Worker.** Not to D1, not to KV, not to a log line.
 
@@ -103,8 +105,9 @@ public**: the deferral is a bare `type: 5` with no flags, so the reply lands in 
 - Tests are node vitest. They must not call `env.AI.run` or RunPod. **Do not import `src/workflow.ts`
   or `src/index.ts` from a test: both import `cloudflare:workers`**, which does not exist in the node
   pool, so the import alone fails the file.
-- `OLLAMA_MODEL` and `RUNPOD_ENDPOINT_ID` are optional on `Env`. The code already treats them as
-  absent-able and the GPU path refuses when either is missing; keep the type matching the code.
+- `OLLAMA_MODEL` and `RUNPOD_ENDPOINT_ID` are required `string` fields on `Env` (set in
+  `wrangler.jsonc`). An Ollama ask still refuses when `RUNPOD_ENDPOINT_ID` or `RUNPOD_API_KEY`
+  is empty (`src/discord.ts`).
 - Model output must never be able to ping the server. Discord REST sends
   `allowed_mentions: { parse: [] }` on both the JSON and the multipart branch of
   `src/discord_rest.ts`. A new send path needs it too.
@@ -355,10 +358,10 @@ Recorded here because a future session will otherwise rediscover it and guess.
   channel. That is coherent for a small trusted server; it is not equivalent to per-user gating, and
   nothing here should be read as claiming it is. A role allowlist on `/ask` was considered and
   deliberately not built.
-- **The Worker itself performs no authorization of any kind.** There is no guild, channel, role or
-  user check anywhere in `src/discord.ts`. The Ed25519 signature authenticates that the request came
-  from Discord; it says nothing about who sent it or from where. The only per-user limit is the 3
-  second ask cooldown.
+- **`/ask` performs no authorization.** There is no guild, channel, role or user check on that
+  command in `src/discord.ts`. The Ed25519 signature authenticates that the request came from
+  Discord; it says nothing about who sent it or from where. The only per-user limit on `/ask` is
+  the 3 second cooldown. `/lab` is the exception, below.
 - **Because the gate lives outside the code, nothing in this repo can test it, and nothing will go
   red if the bot is later added to a second server.** Do not look for the check in `src/`; there is
   none, by decision. If the restriction is ever relaxed the control disappears silently, and the
