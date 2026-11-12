@@ -413,8 +413,10 @@ The sequence:
 1. Build the candidate: `npx wrangler deploy --dry-run --outdir /tmp/candidate`
 2. Fetch what is live:
    `curl -s -H "authorization: Bearer $CLOUDFLARE_API_TOKEN"
-   "https://api.cloudflare.com/client/v4/accounts/$ACCOUNT_ID/workers/scripts/poly-styrene/content"
-   -o /tmp/deployed.raw`
+   "https://api.cloudflare.com/client/v4/accounts/$ACCOUNT_ID/workers/scripts/poly-styrene/content/v2"
+   -o /tmp/deployed.raw` (`content/v2`: measured 2026-11-12, plain `content` answers 405 with a JSON
+   error, and the tool would compare that error as if it were the bundle). `.github/workflows/deploy.yml`
+   runs this whole sequence from Actions, which is the deploy path (fleet-chezmoi#2620).
 3. `npm run predeploy /tmp/deployed.raw /tmp/candidate/index.js`
 
 **The response IS multipart, measured rather than hedged.** `GET .../content` on this Worker

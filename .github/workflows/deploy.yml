@@ -1,0 +1,91 @@
+name: deploy
+
+# Deploys the poly-styrene Worker from Actions (fleet-chezmoi#2620). Conrad, 2026-11-12: every
+# deployed artifact is built and deployed by Actions, not on the laptop. Measured 2026-11-12: the live
+# version was uploaded from the laptop on 2026-10-23, with no matching Actions run.
+#
+# Manual dispatch from main only. The order is the one CLAUDE.md ("Before a deploy: compare against
+# what is RUNNING") requires: build the candidate, fetch the bundle that is LIVE, and run
+# `npm run predeploy <live> <candidate>`, which refuses when the live bundle holds behaviour the
+# candidate lacks. That is the 2026-10-23 incident: an uncommitted fix that a deploy of main removed.
+# It runs before the deploy because afterwards the two match by construction.
+#
+# Then the D1 migrations and the deploy. Secrets are not set here: a wrangler secret persists.
+# The runner ships Docker, which the lab container's image build needs.
+
+on:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: deploy-production
+  cancel-in-progress: false
+
+jobs:
+  deploy:
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    environment: production
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          fetch-depth: 0
+
+      - name: Only main, and only a commit on origin/main
+        env:
+          REF: ${{ github.ref }}
+        run: |
+          set -euo pipefail
+          [ "$REF" = "refs/heads/main" ] || { echo "::error::deploy runs only from main, not $REF"; exit 1; }
+          git fetch --no-tags origin main
+          head="$(git rev-parse HEAD)"
+          git merge-base --is-ancestor "$head" origin/main || { echo "::error::$head is not on origin/main"; exit 1; }
+          echo "deploying $head from main"
+
+      - uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7.1.0
+        with:
+          node-version: "22"
+          cache: npm
+
+      - run: npm ci
+      - run: npm run typecheck
+      - run: npm test
+
+      - name: Build the candidate bundle
+        env:
+          CLOUDFLARE_ACCOUNT_ID: ${{ secrets.CLOUDFLARE_ACCOUNT_ID }}
+        run: npx wrangler deploy --dry-run --containers-rollout=none --outdir "$RUNNER_TEMP/candidate"
+
+      # content/v2, not content: measured 2026-11-12, GET .../content answers 405 method_not_allowed
+      # (a 52-byte JSON error) while .../content/v2 returns the multipart bundle. The 200 check below
+      # is what stops an error body from being compared as if it were the live bundle.
+      - name: Fetch the LIVE bundle
+        env:
+          CLOUDFLARE_API_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN }}
+          CLOUDFLARE_ACCOUNT_ID: ${{ secrets.CLOUDFLARE_ACCOUNT_ID }}
+        run: |
+          set -euo pipefail
+          code="$(curl -sS -o "$RUNNER_TEMP/deployed.raw" -w '%{http_code}' \
+            -H "authorization: Bearer $CLOUDFLARE_API_TOKEN" \
+            "https://api.cloudflare.com/client/v4/accounts/$CLOUDFLARE_ACCOUNT_ID/workers/scripts/poly-styrene/content/v2")"
+          [ "$code" = 200 ] || { echo "::error::could not fetch the live bundle (HTTP $code); an unread live bundle is not a passed comparison"; exit 1; }
+          [ -s "$RUNNER_TEMP/deployed.raw" ] || { echo "::error::the live bundle is empty"; exit 1; }
+          echo "live bundle: $(wc -c < "$RUNNER_TEMP/deployed.raw") bytes"
+
+      # Unpiped and its own step, so the exit judged is the tool's. A loss refuses; an addition does not.
+      - name: Live vs candidate (refuses on a loss)
+        run: npm run predeploy -- "$RUNNER_TEMP/deployed.raw" "$RUNNER_TEMP/candidate/index.js"
+
+      - name: D1 migrations (remote)
+        env:
+          CLOUDFLARE_API_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN }}
+          CLOUDFLARE_ACCOUNT_ID: ${{ secrets.CLOUDFLARE_ACCOUNT_ID }}
+        run: npx wrangler d1 migrations apply poly-styrene --remote
+
+      - name: wrangler deploy
+        env:
+          CLOUDFLARE_API_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN }}
+          CLOUDFLARE_ACCOUNT_ID: ${{ secrets.CLOUDFLARE_ACCOUNT_ID }}
+        run: npx wrangler deploy
