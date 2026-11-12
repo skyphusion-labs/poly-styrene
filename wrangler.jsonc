@@ -4,7 +4,8 @@
   "main": "src/index.ts",
   "compatibility_date": "2026-10-23",
   "compatibility_flags": ["nodejs_compat"],
-  "account_id": "fabcb25d9c7eb087110ec474a03e50d2",
+  // account_id is NOT set here: wrangler reads CLOUDFLARE_ACCOUNT_ID (the deploy
+  // workflow sets it from the production environment secret).
   "workers_dev": true,
   "observability": {
     "enabled": true,
