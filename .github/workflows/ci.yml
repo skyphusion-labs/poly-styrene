@@ -32,3 +32,24 @@ jobs:
           cache: npm
       - run: npm ci
       - run: npm run coverage
+
+  # The deploy build, on every PR and main push, with no credential (fleet-chezmoi#2620). It runs the
+  # same `wrangler deploy --dry-run` the deploy workflow uses to build its candidate, so a bundle or
+  # config error fails here, before anyone dispatches a deploy. It does NOT prove a binding target
+  # exists in the account; only the real deploy can.
+  deploy-dry-run:
+    name: deploy-dry-run
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      - uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7.1.0
+        with:
+          node-version: "22"
+          cache: npm
+      - run: npm ci
+      - name: wrangler deploy --dry-run
+        run: npx wrangler deploy --dry-run --containers-rollout=none --outdir "$RUNNER_TEMP/candidate"
+      # A dry run that wrote nothing, or a bundle missing a class the config binds, is not a pass.
+      - name: The bundle exports every class wrangler.jsonc binds
+        run: node scripts/check-bundle-exports.mjs wrangler.jsonc "$RUNNER_TEMP/candidate/index.js"
